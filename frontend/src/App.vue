@@ -1,14 +1,19 @@
 <script setup>
-import ChatView from './views/ChatView.vue'
+import { RouterLink, RouterView } from 'vue-router'
 </script>
 
 <template>
   <div class="app">
     <header class="header">
       <h1 class="title">TutorLoop-AI</h1>
+      <nav class="nav">
+        <RouterLink to="/" class="nav-link">首页</RouterLink>
+        <span class="divider">|</span>
+        <RouterLink to="/upload" class="nav-link">上传</RouterLink>
+      </nav>
     </header>
     <main class="main">
-      <ChatView />
+      <RouterView />
     </main>
   </div>
 </template>
@@ -43,7 +48,10 @@ body {
   padding: 0.75rem 1rem;
   background: #ffffff;
   border-bottom: 1px solid #e5e7eb;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
 }
 
 .title {
@@ -51,6 +59,28 @@ body {
   font-size: 1.125rem;
   font-weight: 600;
   color: #2563eb;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9375rem;
+}
+
+.nav-link {
+  color: #4b5563;
+  text-decoration: none;
+  padding: 0.25rem 0.375rem;
+}
+
+.nav-link.router-link-active {
+  color: #2563eb;
+  font-weight: 500;
+}
+
+.divider {
+  color: #d1d5db;
 }
 
 .main {

@@ -17,6 +17,9 @@ venv/
 dist/
 build/
 
+# Uploads / media generated at runtime
+uploads/
+
 # IDE
 .vscode/
 .idea/

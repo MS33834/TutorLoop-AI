@@ -13,6 +13,11 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[Message]
     room_slug: Optional[str] = Field(None, examples=["room-abc123"])
+    video_id: Optional[str] = Field(None, examples=["video-uuid"])
+    screenshot: Optional[str] = Field(
+        None, examples=["data:image/png;base64,..."]
+    )
+    timestamp: Optional[float] = Field(None, examples=[12.5])
 
 
 class KeyHealthSummary(BaseModel):

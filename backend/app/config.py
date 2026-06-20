@@ -21,6 +21,25 @@ class Settings(BaseSettings):
     app_host: str = Field(default="0.0.0.0", alias="APP_HOST")
     app_port: int = Field(default=8000, alias="APP_PORT")
 
+    database_url: str = Field(
+        default="postgresql+asyncpg://postgres:postgres@localhost:5432/tutorloop",
+        alias="DATABASE_URL",
+    )
+    neo4j_uri: str = Field(default="bolt://localhost:7687", alias="NEO4J_URI")
+    neo4j_user: str = Field(default="neo4j", alias="NEO4J_USER")
+    neo4j_password: str = Field(default="password", alias="NEO4J_PASSWORD")
+
+    upload_dir: str = Field(default="uploads", alias="UPLOAD_DIR")
+    frame_interval_seconds: int = Field(default=5, alias="FRAME_INTERVAL_SECONDS")
+
+    embedding_model: str = Field(
+        default="sentence-transformers/all-MiniLM-L6-v2", alias="EMBEDDING_MODEL"
+    )
+
+    vlm_model: str = Field(default="qwen2.5-vl", alias="VLM_MODEL")
+    vlm_base_url: str = Field(default="", alias="VLM_BASE_URL")
+    vlm_api_key: str = Field(default="", alias="VLM_API_KEY")
+
     @field_validator("llm_api_keys_raw", "llm_base_urls_raw", "llm_models_raw")
     @classmethod
     def _strip_whitespace(cls, value: str) -> str:

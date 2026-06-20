@@ -1,11 +1,32 @@
 """FastAPI application entry point."""
 
+from contextlib import asynccontextmanager
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-from app.routers import chat
+from app.config import settings
+from app.db.neo4j import close_driver
+from app.db.postgres import close_db, init_db
+from app.routers import chat, courses
 
-app = FastAPI(title="TutorLoop-AI Gateway", version="0.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
+    await init_db()
+    yield
+    await close_db()
+    await close_driver()
+
+
+app = FastAPI(
+    title="TutorLoop-AI Gateway",
+    version="0.0.0",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -16,3 +37,9 @@ app.add_middleware(
 )
 
 app.include_router(chat.router)
+app.include_router(courses.router)
+app.mount(
+    "/uploads",
+    StaticFiles(directory=settings.upload_dir, check_dir=False),
+    name="uploads",
+)

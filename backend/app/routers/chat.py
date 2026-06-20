@@ -1,18 +1,78 @@
 """Chat and health endpoints."""
 
+import base64
 import json
+import logging
+import tempfile
+from pathlib import Path
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.gateway import pool, stream_chat
 from app.schemas import ChatRequest, HealthResponse, KeyHealthSummary
+from app.services.rag_service import retrieve_context
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
+def _save_screenshot_if_any(screenshot: str | None) -> str | None:
+    """Save a base64 screenshot to a temporary file and return the path."""
+    if not screenshot:
+        return None
+    try:
+        header, _, data = screenshot.partition(",")
+        image_data = data if data else header
+        suffix = ".png" if "png" in header.lower() else ".jpg"
+        fd, path = tempfile.mkstemp(suffix=suffix)
+        with open(fd, "wb") as f:
+            f.write(base64.b64decode(image_data))
+        return path
+    except Exception as exc:
+        logger.warning("Could not save screenshot: %s", exc)
+        return None
+
+
+def _format_context(ctx: dict) -> str:
+    lines = ["以下是用户当前学习场景的上下文信息："]
+    if ctx.get("frames"):
+        lines.append("相关视频帧：")
+        for frame in ctx["frames"]:
+            lines.append(
+                f"- 时间 {frame['timestamp_seconds']}s，路径 {frame['file_path']}，"
+                f"描述：{frame.get('caption') or '无'}"
+            )
+    if ctx.get("knowledge_nodes"):
+        lines.append("相关知识点：")
+        for node in ctx["knowledge_nodes"]:
+            lines.append(f"- {node['name']}：{node.get('description') or '无'}")
+    if ctx.get("screenshot_path"):
+        lines.append(f"用户截图路径：{ctx['screenshot_path']}")
+    return "\n".join(lines)
+
+
 async def _sse_event_stream(request: ChatRequest):
     messages = [m.model_dump() for m in request.messages]
+
+    if request.video_id and (request.screenshot or request.timestamp is not None):
+        screenshot_path = _save_screenshot_if_any(request.screenshot)
+        try:
+            ctx = await retrieve_context(
+                video_id=request.video_id,
+                question=request.messages[-1].content if request.messages else "",
+                screenshot_path=screenshot_path,
+                timestamp=request.timestamp,
+            )
+            context_text = _format_context(ctx)
+            messages.insert(0, {"role": "system", "content": context_text})
+        except Exception as exc:
+            logger.warning("RAG context retrieval failed: %s", exc)
+        finally:
+            if screenshot_path and Path(screenshot_path).exists():
+                Path(screenshot_path).unlink(missing_ok=True)
+
     async for chunk in stream_chat(messages, model_type="text"):
         yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
