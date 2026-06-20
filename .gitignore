@@ -13,6 +13,10 @@ __pycache__/
 .venv/
 venv/
 
+# Build outputs
+dist/
+build/
+
 # IDE
 .vscode/
 .idea/
