@@ -72,3 +72,27 @@ class MasteryItem(BaseModel):
 class RecommendationResponse(BaseModel):
     recommendation: Optional[dict[str, Any]]
     message: Optional[str] = None
+
+
+class ReportSummary(BaseModel):
+    total_nodes: int
+    mastered_nodes: int
+    mastery_rate: float
+    average_mastery: float
+    interaction_count: int
+    recent_7d_interactions: int
+    total_watch_minutes: float
+    total_help_count: int
+    correct_count: int
+    incorrect_count: int
+    accuracy: float
+
+
+class ReportResponse(BaseModel):
+    user_id: str
+    course_id: str
+    course_title: str
+    generated_at: str
+    summary: ReportSummary
+    mastery_items: list[MasteryItem]
+    weak_nodes: list[dict[str, Any]]

@@ -9,8 +9,9 @@ from app.schemas import (
     InteractionResponse,
     MasteryItem,
     RecommendationResponse,
+    ReportResponse,
 )
-from app.services import bkt_engine, recommendation
+from app.services import bkt_engine, recommendation, report_service
 
 logger = logging.getLogger(__name__)
 
@@ -85,3 +86,19 @@ async def recommend_for_user(
         )
 
     return RecommendationResponse(recommendation=rec)
+
+
+@router.get("/api/users/{user_id}/report", response_model=ReportResponse)
+async def report_for_user(
+    user_id: str, course_id: str = Query(..., description="Course ID")
+):
+    if not course_id:
+        raise HTTPException(status_code=422, detail="course_id is required")
+
+    try:
+        return await report_service.generate_report(user_id, course_id)
+    except Exception as exc:
+        logger.warning("Report generation failed: %s", exc)
+        raise HTTPException(
+            status_code=503, detail=f"报告生成失败: {exc}"
+        ) from exc

@@ -381,6 +381,13 @@ function onKeydown(e) {
             :recommendation="recommendation"
             @jump="onSeek"
           />
+          <router-link
+            v-if="courseId"
+            :to="`/report/${encodeURIComponent(courseId)}`"
+            class="report-link"
+          >
+            查看完整学习报告
+          </router-link>
           <div v-if="masteryError || recError" class="panel-error">
             {{ masteryError || recError }}
           </div>
@@ -575,6 +582,18 @@ function onKeydown(e) {
   border-radius: 0.5rem;
   font-size: 0.8125rem;
   text-align: center;
+}
+
+.report-link {
+  display: block;
+  text-align: center;
+  padding: 0.5rem;
+  background: #eff6ff;
+  color: #2563eb;
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  text-decoration: none;
+  font-weight: 500;
 }
 
 .message-list {
