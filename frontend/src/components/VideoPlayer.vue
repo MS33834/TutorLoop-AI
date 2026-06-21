@@ -74,6 +74,11 @@ function seek(e) {
   video.value.currentTime = ratio * duration.value
 }
 
+function seekTo(seconds) {
+  if (!video.value) return
+  video.value.currentTime = Math.max(0, seconds)
+}
+
 function takeScreenshot() {
   if (!video.value || !props.src) return
   const canvas = document.createElement('canvas')
@@ -106,6 +111,10 @@ watch(() => props.src, () => {
   currentTime.value = 0
   duration.value = 0
   buffered.value = 0
+})
+
+defineExpose({
+  seekTo
 })
 </script>
 

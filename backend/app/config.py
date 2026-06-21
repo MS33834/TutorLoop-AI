@@ -36,6 +36,11 @@ class Settings(BaseSettings):
         default="sentence-transformers/all-MiniLM-L6-v2", alias="EMBEDDING_MODEL"
     )
 
+    bkt_p_l0: float = Field(default=0.3, alias="BKT_P_L0")
+    bkt_p_t: float = Field(default=0.3, alias="BKT_P_T")
+    bkt_p_g: float = Field(default=0.2, alias="BKT_P_G")
+    bkt_p_s: float = Field(default=0.1, alias="BKT_P_S")
+
     vlm_model: str = Field(default="qwen2.5-vl", alias="VLM_MODEL")
     vlm_base_url: str = Field(default="", alias="VLM_BASE_URL")
     vlm_api_key: str = Field(default="", alias="VLM_API_KEY")

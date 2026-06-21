@@ -1,8 +1,18 @@
 <script setup>
-import { ref, onMounted, nextTick, watch } from 'vue'
+import {
+  ref,
+  onMounted,
+  onBeforeUnmount,
+  nextTick,
+  watch,
+  computed
+} from 'vue'
 import { useChatStore } from '../stores/chat.js'
+import { useUserStore } from '../stores/user.js'
 import { apiFetch } from '../api/client.js'
 import VideoPlayer from '../components/VideoPlayer.vue'
+import MasteryRadar from '../components/MasteryRadar.vue'
+import RecommendCard from '../components/RecommendCard.vue'
 
 const props = defineProps({
   slug: { type: String, required: true }
@@ -11,6 +21,8 @@ const props = defineProps({
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 const chat = useChatStore()
+const user = useUserStore()
+
 const course = ref(null)
 const currentVideo = ref(null)
 const currentTime = ref(0)
@@ -20,24 +32,78 @@ const loading = ref(false)
 const error = ref('')
 const pageLoading = ref(false)
 const messageList = ref(null)
+const videoPlayerRef = ref(null)
+
+const masteryItems = ref([])
+const recommendation = ref(null)
+const masteryError = ref('')
+const recError = ref('')
+
+const watchSeconds = ref(0)
+const lastTickAt = ref(null)
+
+const feedbackSubmittedForIndex = ref(-1)
+const showNodePicker = ref(false)
+const selectedNodeId = ref('')
+const pendingFeedbackCorrect = ref(false)
+const feedbackLoading = ref(false)
+
+const courseId = computed(() => course.value?.id || props.slug)
 
 onMounted(() => {
   loadCourse()
 })
 
+onBeforeUnmount(() => {
+  sendWatchRecord()
+})
+
 watch(() => props.slug, loadCourse)
+
+watch(currentVideo, () => {
+  watchSeconds.value = 0
+  lastTickAt.value = null
+})
 
 async function loadCourse() {
   pageLoading.value = true
   error.value = ''
+  masteryError.value = ''
+  recError.value = ''
   try {
     course.value = await apiFetch(`/api/courses/${props.slug}`)
     const videos = course.value?.videos || []
     currentVideo.value = videos[0] || null
+    await loadMastery()
+    await loadRecommendation()
   } catch (err) {
     error.value = err.message || '加载课程失败'
   } finally {
     pageLoading.value = false
+  }
+}
+
+async function loadMastery() {
+  if (!user.userId || !courseId.value) return
+  try {
+    const data = await apiFetch(
+      `/api/users/${user.userId}/mastery?course_id=${encodeURIComponent(courseId.value)}`
+    )
+    masteryItems.value = Array.isArray(data) ? data : data?.items || []
+  } catch (err) {
+    masteryError.value = err.message || '掌握度加载失败'
+  }
+}
+
+async function loadRecommendation() {
+  if (!user.userId || !courseId.value) return
+  try {
+    const data = await apiFetch(
+      `/api/users/${user.userId}/recommend?course_id=${encodeURIComponent(courseId.value)}`
+    )
+    recommendation.value = data?.recommendation || data || null
+  } catch (err) {
+    recError.value = err.message || '推荐加载失败'
   }
 }
 
@@ -47,7 +113,20 @@ function onScreenshot(dataURL) {
 }
 
 function onTimeUpdate(time) {
+  const now = Date.now()
+  if (lastTickAt.value) {
+    const delta = (now - lastTickAt.value) / 1000
+    // 正常播放 tick 间隔通常 < 1s， seek 时跳过累加
+    if (delta > 0 && delta < 2.5) {
+      watchSeconds.value += delta
+    }
+  }
   currentTime.value = time
+  lastTickAt.value = now
+}
+
+function onSeek(seconds) {
+  videoPlayerRef.value?.seekTo?.(seconds)
 }
 
 function clearScreenshot() {
@@ -66,9 +145,125 @@ function handleError(message) {
   loading.value = false
 }
 
+async function sendWatchRecord() {
+  if (!user.userId || !courseId.value || watchSeconds.value <= 0) return
+  const payload = {
+    user_id: user.userId,
+    course_id: courseId.value,
+    video_id: currentVideo.value?.id || null,
+    video_timestamp: currentTime.value,
+    node_id: recommendation.value?.node?.id || recommendation.value?.node_id || null,
+    is_correct: null,
+    question_text: '[观看记录]',
+    answer_text: '',
+    watch_seconds: Math.round(watchSeconds.value)
+  }
+  try {
+    await apiFetch('/api/interactions', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
+    watchSeconds.value = 0
+    lastTickAt.value = null
+  } catch (err) {
+    // 观看记录失败不影响主流程
+    // eslint-disable-next-line no-console
+    console.warn('观看记录提交失败', err)
+  }
+}
+
+async function sendInteraction(payload) {
+  return apiFetch('/api/interactions', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+}
+
+const lastAssistantIndex = computed(() => {
+  for (let i = chat.messages.length - 1; i >= 0; i--) {
+    if (chat.messages[i].role === 'assistant') return i
+  }
+  return -1
+})
+
+const lastUserIndex = computed(() => {
+  for (let i = chat.messages.length - 1; i >= 0; i--) {
+    if (chat.messages[i].role === 'user') return i
+  }
+  return -1
+})
+
+const showFeedback = computed(() => {
+  const idx = lastAssistantIndex.value
+  if (idx < 0) return false
+  if (loading.value) return false
+  if (feedbackSubmittedForIndex.value === idx) return false
+  return chat.messages[idx]?.content?.length > 0
+})
+
+const recommendedNodeId = computed(() => {
+  const node = recommendation.value?.node
+  if (node && typeof node === 'object') return node.id || node.name || null
+  return recommendation.value?.node_id || recommendation.value?.node || null
+})
+
+async function sendFeedback(isCorrect) {
+  if (feedbackLoading.value) return
+
+  let nodeId = recommendedNodeId.value
+  if (!nodeId) {
+    if (!selectedNodeId.value) {
+      pendingFeedbackCorrect.value = isCorrect
+      showNodePicker.value = true
+      return
+    }
+    nodeId = selectedNodeId.value
+  }
+
+  feedbackLoading.value = true
+  error.value = ''
+
+  try {
+    const questionText = chat.messages[lastUserIndex.value]?.content || ''
+    const answerText = chat.messages[lastAssistantIndex.value]?.content || ''
+
+    await sendInteraction({
+      user_id: user.userId,
+      course_id: courseId.value,
+      video_id: currentVideo.value?.id || null,
+      video_timestamp: currentTime.value,
+      node_id: nodeId,
+      is_correct: isCorrect,
+      question_text: questionText,
+      answer_text: answerText,
+      watch_seconds: Math.round(watchSeconds.value)
+    })
+
+    feedbackSubmittedForIndex.value = lastAssistantIndex.value
+    showNodePicker.value = false
+    selectedNodeId.value = ''
+    pendingFeedbackCorrect.value = false
+
+    await loadMastery()
+    await loadRecommendation()
+  } catch (err) {
+    error.value = err.message || '反馈提交失败，请重试'
+  } finally {
+    feedbackLoading.value = false
+  }
+}
+
+function confirmNodeForFeedback() {
+  if (!selectedNodeId.value) return
+  sendFeedback(pendingFeedbackCorrect.value)
+}
+
 async function send() {
   const text = input.value.trim()
   if ((!text && !screenshot.value) || loading.value) return
+
+  // 每次提问前 flush 已累积的观看时长
+  await sendWatchRecord()
 
   error.value = ''
   chat.addMessage('user', text || '[截图提问]')
@@ -79,8 +274,11 @@ async function send() {
   chat.addMessage('assistant', '')
 
   try {
+    const history = chat.messages
+      .filter((m) => m.content || m.role === 'user')
+      .map((m) => ({ role: m.role, content: m.content }))
     const body = {
-      messages: [{ role: 'user', content: text }],
+      messages: history,
       timestamp: currentTime.value,
       video_id: currentVideo.value?.id || null
     }
@@ -158,6 +356,7 @@ function onKeydown(e) {
         <div class="video-wrapper">
           <VideoPlayer
             v-if="currentVideo?.video_url || currentVideo?.url"
+            ref="videoPlayerRef"
             :src="currentVideo.video_url || currentVideo.url"
             :poster="currentVideo.poster_url || ''"
             @screenshot="onScreenshot"
@@ -176,6 +375,17 @@ function onKeydown(e) {
       </div>
 
       <div class="chat-section">
+        <div class="learner-panel">
+          <MasteryRadar :items="masteryItems" />
+          <RecommendCard
+            :recommendation="recommendation"
+            @jump="onSeek"
+          />
+          <div v-if="masteryError || recError" class="panel-error">
+            {{ masteryError || recError }}
+          </div>
+        </div>
+
         <div ref="messageList" class="message-list">
           <div
             v-for="(message, index) in chat.messages"
@@ -195,6 +405,50 @@ function onKeydown(e) {
           </div>
 
           <div v-if="error" class="error-banner">{{ error }}</div>
+        </div>
+
+        <div v-if="showFeedback" class="feedback-bar">
+          <span class="feedback-title">这个回答对你有帮助吗？</span>
+          <div class="feedback-actions">
+            <button
+              class="feedback-btn good"
+              type="button"
+              :disabled="feedbackLoading"
+              @click="sendFeedback(true)"
+            >
+              ✅ 明白了
+            </button>
+            <button
+              class="feedback-btn bad"
+              type="button"
+              :disabled="feedbackLoading"
+              @click="sendFeedback(false)"
+            >
+              ❌ 还不懂
+            </button>
+          </div>
+
+          <div v-if="showNodePicker" class="node-picker">
+            <p class="picker-hint">请选择要反馈的知识点：</p>
+            <select v-model="selectedNodeId" class="node-select">
+              <option value="" disabled>选择知识点</option>
+              <option
+                v-for="item in masteryItems"
+                :key="item.name"
+                :value="item.node_id || item.name"
+              >
+                {{ item.name }}
+              </option>
+            </select>
+            <button
+              class="confirm-btn"
+              type="button"
+              :disabled="!selectedNodeId || feedbackLoading"
+              @click="confirmNodeForFeedback"
+            >
+              确认
+            </button>
+          </div>
         </div>
 
         <div class="input-area">
@@ -302,6 +556,27 @@ function onKeydown(e) {
   overflow: hidden;
 }
 
+.learner-panel {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  max-height: 55%;
+  overflow-y: auto;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f5f6f8;
+}
+
+.panel-error {
+  padding: 0.5rem 0.75rem;
+  background: #fee2e2;
+  color: #b91c1c;
+  border-radius: 0.5rem;
+  font-size: 0.8125rem;
+  text-align: center;
+}
+
 .message-list {
   flex: 1;
   min-height: 0;
@@ -392,6 +667,87 @@ function onKeydown(e) {
   border-radius: 0.5rem;
   font-size: 0.875rem;
   text-align: center;
+}
+
+.feedback-bar {
+  flex-shrink: 0;
+  padding: 0.625rem 0.75rem;
+  background: #ffffff;
+  border-top: 1px solid #e5e7eb;
+}
+
+.feedback-title {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-size: 0.8125rem;
+  color: #6b7280;
+  text-align: center;
+}
+
+.feedback-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.feedback-btn {
+  flex: 1;
+  padding: 0.5rem 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.625rem;
+  background: #f9fafb;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.feedback-btn.good {
+  color: #047857;
+}
+
+.feedback-btn.bad {
+  color: #b91c1c;
+}
+
+.feedback-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.node-picker {
+  margin-top: 0.625rem;
+  padding-top: 0.625rem;
+  border-top: 1px dashed #e5e7eb;
+}
+
+.picker-hint {
+  margin: 0 0 0.375rem;
+  font-size: 0.8125rem;
+  color: #6b7280;
+}
+
+.node-select {
+  width: 100%;
+  padding: 0.5rem 0.625rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  font-size: 0.9375rem;
+  background: #ffffff;
+}
+
+.confirm-btn {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: none;
+  border-radius: 0.5rem;
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 0.9375rem;
+  cursor: pointer;
+}
+
+.confirm-btn:disabled {
+  background: #93c5fd;
+  cursor: not-allowed;
 }
 
 .input-area {

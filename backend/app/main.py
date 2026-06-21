@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.db.neo4j import close_driver
 from app.db.postgres import close_db, init_db
-from app.routers import chat, courses
+from app.routers import chat, courses, users
 
 
 @asynccontextmanager
@@ -38,6 +38,7 @@ app.add_middleware(
 
 app.include_router(chat.router)
 app.include_router(courses.router)
+app.include_router(users.router)
 app.mount(
     "/uploads",
     StaticFiles(directory=settings.upload_dir, check_dir=False),

@@ -104,6 +104,24 @@ class KnowledgeNode(Base):
     created_at: Mapped[datetime] = mapped_column(default=now_utc)
 
     course: Mapped["Course"] = relationship(back_populates="knowledge_nodes")
+    mastery_records: Mapped[list["Mastery"]] = relationship(
+        back_populates="node", cascade="all, delete-orphan"
+    )
+
+
+class Mastery(Base):
+    __tablename__ = "mastery"
+
+    user_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    node_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_nodes.id", ondelete="CASCADE"), primary_key=True
+    )
+    p_known: Mapped[float] = mapped_column(Float, default=0.3)
+    p_t: Mapped[float] = mapped_column(Float, default=0.3)
+    interactions_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(default=now_utc)
+
+    node: Mapped["KnowledgeNode"] = relationship(back_populates="mastery_records")
 
 
 class Interaction(Base):
@@ -116,6 +134,7 @@ class Interaction(Base):
     room_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     course_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     video_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    node_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     video_timestamp: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     screenshot_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     question_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
