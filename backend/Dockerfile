@@ -14,7 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+RUN useradd -m appuser && mkdir -p /app/uploads && chown -R appuser:appuser /app
+USER appuser
+
+COPY --chown=appuser:appuser . .
 
 EXPOSE 8000
 

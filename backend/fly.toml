@@ -1,0 +1,23 @@
+app = 'tutorloop-backend'
+primary_region = 'hkg'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  memory = '512mb'
+  cpu_kind = 'shared'
+  cpus = 1
+
+[env]
+  LOCAL_BASE_URL = 'http://localhost:8001/v1'
+  LOCAL_MODEL = 'qwen3.5-4b'
+  UPLOAD_DIR = '/app/uploads'

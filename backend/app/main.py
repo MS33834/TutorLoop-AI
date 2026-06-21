@@ -1,8 +1,10 @@
 """FastAPI application entry point."""
 
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -11,6 +13,13 @@ from app.config import settings
 from app.db.neo4j import close_driver
 from app.db.postgres import close_db, init_db
 from app.routers import chat, courses, users
+
+if os.environ.get("SENTRY_DSN"):
+    sentry_sdk.init(
+        dsn=os.environ["SENTRY_DSN"],
+        traces_sample_rate=0.1,
+        profiles_sample_rate=0.1,
+    )
 
 
 @asynccontextmanager
