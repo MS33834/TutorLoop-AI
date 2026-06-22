@@ -279,6 +279,7 @@ async function send() {
       .map((m) => ({ role: m.role, content: m.content }))
     const body = {
       messages: history,
+      room_slug: props.slug,
       timestamp: currentTime.value,
       video_id: currentVideo.value?.id || null
     }

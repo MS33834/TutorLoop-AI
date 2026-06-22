@@ -76,7 +76,7 @@ async def recommend_for_user(
         logger.warning("Recommendation failed: %s", exc)
         return RecommendationResponse(
             recommendation=None,
-            message=f"推荐服务暂时不可用: {exc}",
+            message="推荐服务暂时不可用，请稍后重试。",
         )
 
     if rec is None:
@@ -100,5 +100,5 @@ async def report_for_user(
     except Exception as exc:
         logger.warning("Report generation failed: %s", exc)
         raise HTTPException(
-            status_code=503, detail=f"报告生成失败: {exc}"
+            status_code=503, detail="报告生成失败，请稍后重试。"
         ) from exc

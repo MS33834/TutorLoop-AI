@@ -7,11 +7,13 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from app.config import settings
 from app.db.neo4j import get_graph
 from app.db.postgres import AsyncSessionLocal
 from app.models.db import Video, VideoFrame
 from app.services import bkt_engine
 from app.services.embedding_service import encode_text
+from app.services.recommendation_strategies import get_strategy
 
 logger = logging.getLogger(__name__)
 
@@ -97,17 +99,41 @@ async def _find_best_frame(course_id: str, node: dict) -> dict | None:
 
 
 def _build_prereq_map(edges: list[dict]) -> dict[str, set[str]]:
-    """Map node_id -> set of prerequisite node_ids."""
+    """Map node_id -> set of prerequisite node_ids, ignoring cycles."""
     prereq_map: dict[str, set[str]] = {}
     for edge in edges:
         if edge.get("relation", "prerequisite") != "prerequisite":
             continue
         from_id = edge.get("from")
         to_id = edge.get("to")
-        if not from_id or not to_id:
+        if not from_id or not to_id or from_id == to_id:
             continue
         prereq_map.setdefault(to_id, set()).add(from_id)
     return prereq_map
+
+
+def _compute_depth(prereq_map: dict[str, set[str]]) -> dict[str, int]:
+    """Compute longest prerequisite chain depth for each node (DAG)."""
+    depth_cache: dict[str, int] = {}
+
+    def depth(node_id: str, visiting: set[str] | None = None) -> int:
+        if node_id in depth_cache:
+            return depth_cache[node_id]
+        if visiting is None:
+            visiting = set()
+        if node_id in visiting:
+            return 0  # cycle guard
+        visiting.add(node_id)
+        prereqs = prereq_map.get(node_id, set())
+        max_depth = 1 + max((depth(p, visiting) for p in prereqs), default=0)
+        visiting.discard(node_id)
+        depth_cache[node_id] = max_depth
+        return max_depth
+
+    all_nodes = set(prereq_map.keys()) | {p for deps in prereq_map.values() for p in deps}
+    for node_id in all_nodes:
+        depth(node_id)
+    return depth_cache
 
 
 async def recommend_next(user_id: str, course_id: str) -> dict | None:
@@ -173,11 +199,18 @@ async def recommend_next(user_id: str, course_id: str) -> dict | None:
     if not candidates:
         return None
 
-    def _score(item: tuple[dict, dict]) -> float:
-        _, record = item
-        return 1 - record["p_known"]
+    strategy = get_strategy(settings.recommend_strategy)
+    depth_map = _compute_depth(prereq_map)
 
-    best_node, best_record = max(candidates, key=_score)
+    candidate_nodes = [node for node, _ in candidates]
+    ranked = strategy.rank(
+        candidate_nodes,
+        mastery_by_node,
+        {"depth_map": depth_map},
+    )
+
+    best_node = ranked[0]
+    best_record = mastery_by_node.get(best_node.get("id"), {})
     frame = await _find_best_frame(course_id, best_node)
 
     return {
@@ -185,8 +218,8 @@ async def recommend_next(user_id: str, course_id: str) -> dict | None:
             "id": best_node.get("id"),
             "name": best_node.get("name"),
             "description": best_node.get("description"),
-            "threshold": best_record["threshold"],
-            "p_known": best_record["p_known"],
+            "threshold": best_record.get("threshold", 0.8),
+            "p_known": best_record.get("p_known", 0.0),
         },
         "video_id": frame["video_id"] if frame else None,
         "timestamp_seconds": frame["timestamp_seconds"] if frame else None,

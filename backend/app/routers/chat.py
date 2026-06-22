@@ -6,16 +6,19 @@ import logging
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.gateway import pool, stream_chat
+from app.limiter import limiter
 from app.schemas import ChatRequest, HealthResponse, KeyHealthSummary
 from app.services.rag_service import retrieve_context
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024  # 2 MB
 
 
 def _save_screenshot_if_any(screenshot: str | None) -> str | None:
@@ -25,10 +28,23 @@ def _save_screenshot_if_any(screenshot: str | None) -> str | None:
     try:
         header, _, data = screenshot.partition(",")
         image_data = data if data else header
-        suffix = ".png" if "png" in header.lower() else ".jpg"
+        if not image_data:
+            return None
+        raw = base64.b64decode(image_data)
+        if len(raw) > MAX_SCREENSHOT_BYTES:
+            logger.warning("Screenshot too large: %s bytes", len(raw))
+            return None
+        mime = header.lower()
+        if "png" in mime:
+            suffix = ".png"
+        elif "jpg" in mime or "jpeg" in mime:
+            suffix = ".jpg"
+        else:
+            logger.warning("Unsupported screenshot format: %s", mime)
+            return None
         fd, path = tempfile.mkstemp(suffix=suffix)
         with open(fd, "wb") as f:
-            f.write(base64.b64decode(image_data))
+            f.write(raw)
         return path
     except Exception as exc:
         logger.warning("Could not save screenshot: %s", exc)
@@ -79,9 +95,15 @@ async def _sse_event_stream(request: ChatRequest):
 
 
 @router.post("/api/chat")
-async def chat(request: ChatRequest):
+@limiter.limit("10/minute")
+async def chat(request: Request, body: ChatRequest):
+    if not body.messages:
+        raise HTTPException(status_code=422, detail="messages cannot be empty")
+    if len(body.messages) > 50:
+        raise HTTPException(status_code=422, detail="too many messages")
+
     return StreamingResponse(
-        _sse_event_stream(request),
+        _sse_event_stream(body),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

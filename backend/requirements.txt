@@ -11,3 +11,5 @@ pgvector>=0.2.5
 python-multipart>=0.0.9
 aiofiles>=23.2.0
 sentry-sdk[fastapi]>=2.5.1
+slowapi>=0.1.9
+tenacity>=8.3.0

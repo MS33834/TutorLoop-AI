@@ -1,16 +1,22 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import HomeView from '../views/HomeView.vue'
-import RoomView from '../views/RoomView.vue'
-import UploadView from '../views/UploadView.vue'
-import GraphView from '../views/GraphView.vue'
-import ReportView from '../views/ReportView.vue'
+
+const HomeView = () => import('../views/HomeView.vue')
+const RoomView = () => import('../views/RoomView.vue')
+const UploadView = () => import('../views/UploadView.vue')
+const GraphView = () => import('../views/GraphView.vue')
+const ReportView = () => import('../views/ReportView.vue')
 
 const routes = [
   { path: '/', name: 'home', component: HomeView },
   { path: '/room/:slug', name: 'room', component: RoomView, props: true },
   { path: '/upload', name: 'upload', component: UploadView },
   { path: '/graph/:courseId', name: 'graph', component: GraphView, props: true },
-  { path: '/report/:courseId', name: 'report', component: ReportView, props: true }
+  { path: '/report/:courseId', name: 'report', component: ReportView, props: true },
+  {
+    path: '/:pathMatch(.*)*',
+    name: 'not-found',
+    component: () => import('../views/NotFoundView.vue')
+  }
 ]
 
 const router = createRouter({

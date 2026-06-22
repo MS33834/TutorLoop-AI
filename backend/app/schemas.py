@@ -7,11 +7,11 @@ from pydantic import BaseModel, Field
 
 class Message(BaseModel):
     role: str = Field(..., examples=["user"])
-    content: str = Field(..., examples=["如何解一元一次方程？"])
+    content: str = Field(..., max_length=4000, examples=["如何解一元一次方程？"])
 
 
 class ChatRequest(BaseModel):
-    messages: list[Message]
+    messages: list[Message] = Field(..., min_length=1, max_length=50)
     room_slug: Optional[str] = Field(None, examples=["room-abc123"])
     video_id: Optional[str] = Field(None, examples=["video-uuid"])
     screenshot: Optional[str] = Field(
@@ -33,16 +33,16 @@ class HealthResponse(BaseModel):
 
 
 class InteractionCreate(BaseModel):
-    user_id: str
-    course_id: str
-    video_id: Optional[str] = None
-    video_timestamp: Optional[float] = None
-    question_text: Optional[str] = None
-    answer_text: Optional[str] = None
+    user_id: str = Field(..., min_length=1, max_length=64)
+    course_id: str = Field(..., min_length=1, max_length=64)
+    video_id: Optional[str] = Field(None, max_length=64)
+    video_timestamp: Optional[float] = Field(None, ge=0)
+    question_text: Optional[str] = Field(None, max_length=4000)
+    answer_text: Optional[str] = Field(None, max_length=4000)
     is_correct: Optional[bool] = None
-    help_count: int = 0
-    watch_seconds: Optional[float] = None
-    node_id: Optional[str] = None
+    help_count: int = Field(0, ge=0)
+    watch_seconds: Optional[float] = Field(None, ge=0)
+    node_id: Optional[str] = Field(None, max_length=64)
 
 
 class InteractionResponse(BaseModel):
