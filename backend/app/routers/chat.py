@@ -6,12 +6,14 @@ import logging
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.gateway import pool, stream_chat
 from app.limiter import limiter
+from app.models.db import User
 from app.schemas import ChatRequest, HealthResponse, KeyHealthSummary
+from app.services.auth_service import get_current_active_user
 from app.services.rag_service import retrieve_context
 
 logger = logging.getLogger(__name__)
@@ -96,7 +98,11 @@ async def _sse_event_stream(request: ChatRequest):
 
 @router.post("/api/chat")
 @limiter.limit("10/minute")
-async def chat(request: Request, body: ChatRequest):
+async def chat(
+    request: Request,
+    body: ChatRequest,
+    current_user: User = Depends(get_current_active_user),
+):
     if not body.messages:
         raise HTTPException(status_code=422, detail="messages cannot be empty")
     if len(body.messages) > 50:

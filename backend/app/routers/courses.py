@@ -2,55 +2,124 @@
 
 import logging
 import os
-from typing import Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.db.neo4j import get_graph
 from app.db.postgres import AsyncSessionLocal
-from app.models.db import Course, Video
+from app.limiter import limiter
+from app.models.db import Course, User, Video
+from app.schemas import UserResponse
+from app.services.auth_service import get_current_active_user
 from app.services.kg_agent import extract_knowledge_graph
 from app.services.video_service import process_video
+from app.tasks.jobs import process_video_task
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+MAX_VIDEO_SIZE_BYTES = 500 * 1024 * 1024  # 500 MB
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+ALLOWED_VIDEO_MIME_TYPES = {
+    "video/mp4",
+    "video/quicktime",
+    "video/x-msvideo",
+    "video/x-matroska",
+    "video/webm",
+}
+
+
+def _validate_video_upload(file: UploadFile) -> str:
+    """Validate file type and size for video uploads."""
+    filename = file.filename or ""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported file type: {ext}. Allowed: {', '.join(ALLOWED_VIDEO_EXTENSIONS)}",
+        )
+    if file.content_type not in ALLOWED_VIDEO_MIME_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported MIME type: {file.content_type}. Allowed video uploads only",
+        )
+    return ext
+
+
+def _validate_video_magic(first_bytes: bytes, ext: str) -> None:
+    """Validate that the first bytes of the file look like the declared video format."""
+    if len(first_bytes) < 12:
+        raise HTTPException(status_code=415, detail="File too small to be a valid video")
+
+    if ext in {".mp4", ".mov"}:
+        valid = first_bytes[4:8] in {b"ftyp", b"moov", b"mdat"}
+    elif ext == ".avi":
+        valid = first_bytes[:4] == b"RIFF" and first_bytes[8:12] == b"AVI "
+    elif ext in {".mkv", ".webm"}:
+        valid = first_bytes[:4] == b"\x1a\x45\xdf\xa3"
+    else:
+        valid = True
+
+    if not valid:
+        raise HTTPException(
+            status_code=415,
+            detail="File signature does not match declared video format",
+        )
+
+
+def _serialize_user(user: User | None) -> UserResponse | None:
+    if not user:
+        return None
+    return UserResponse(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        role=user.role,
+        created_at=user.created_at.isoformat(),
+    )
+
 
 class CourseCreate(BaseModel):
     title: str = Field(..., min_length=1)
-    description: Optional[str] = None
-    video_url: Optional[str] = None
+    description: str | None = None
+    video_url: str | None = None
 
 
 class CourseResponse(BaseModel):
     id: str
     title: str
-    description: Optional[str]
+    description: str | None
+    created_by: str | None
     created_at: str
 
 
 class VideoUploadResponse(BaseModel):
     video_id: str
     title: str
-    frame_count: int
+    status: str
+    frame_count: int | None = None
 
 
 class BuildGraphRequest(BaseModel):
-    video_id: Optional[str] = None
-    transcript: Optional[str] = None
+    video_id: str | None = None
+    transcript: str | None = None
 
 
 @router.post("/api/courses", response_model=CourseResponse)
-async def create_course(body: CourseCreate):
+async def create_course(
+    body: CourseCreate,
+    current_user: User = Depends(get_current_active_user),  # noqa: B008
+):
     course = Course(
         id=str(uuid4()),
         title=body.title,
         description=body.description,
         video_url=body.video_url,
+        created_by=current_user.id,
     )
     async with AsyncSessionLocal() as session:
         session.add(course)
@@ -61,6 +130,7 @@ async def create_course(body: CourseCreate):
         id=course.id,
         title=course.title,
         description=course.description,
+        created_by=course.created_by,
         created_at=course.created_at.isoformat(),
     )
 
@@ -76,6 +146,7 @@ async def list_courses():
             "id": c.id,
             "title": c.title,
             "description": c.description,
+            "created_by": c.created_by,
             "created_at": c.created_at.isoformat(),
         }
         for c in courses
@@ -99,63 +170,136 @@ async def get_course(course_id: str):
         "id": course.id,
         "title": course.title,
         "description": course.description,
+        "created_by": course.created_by,
         "created_at": course.created_at.isoformat(),
         "videos": [
             {
                 "id": v.id,
                 "title": v.title,
-                "file_path": v.file_path,
                 "video_url": f"/{v.file_path}",
                 "duration_seconds": v.duration_seconds,
+                "status": v.status,
             }
             for v in videos
         ],
     }
 
 
-@router.post("/api/courses/{course_id}/videos", response_model=VideoUploadResponse)
-async def upload_video(
-    course_id: str,
-    file: UploadFile = File(...),
-    title: Optional[str] = Form(None),
-):
+async def _require_course_owner(course_id: str, current_user: User) -> Course:
     async with AsyncSessionLocal() as session:
-        course_result = await session.execute(
-            select(Course).where(Course.id == course_id)
-        )
-        if course_result.scalar_one_or_none() is None:
+        result = await session.execute(select(Course).where(Course.id == course_id))
+        course = result.scalar_one_or_none()
+        if course is None:
             raise HTTPException(status_code=404, detail="Course not found")
+        if course.created_by != current_user.id and current_user.role != "admin":
+            raise HTTPException(status_code=403, detail="没有权限操作该课程")
+        return course
 
+
+def _safe_remove(path: str) -> None:
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception as exc:
+        logger.warning("Could not remove temporary file %s: %s", path, exc)
+
+
+@router.post("/api/courses/{course_id}/videos", response_model=VideoUploadResponse)
+@limiter.limit("10/minute")
+async def upload_video(
+    request: Request,
+    course_id: str,
+    file: UploadFile = File(...),  # noqa: B008
+    title: str | None = Form(None),  # noqa: B008
+    current_user: User = Depends(get_current_active_user),  # noqa: B008
+):
+    await _require_course_owner(course_id, current_user)
+
+    ext = _validate_video_upload(file)
     safe_title = title or (file.filename or "untitled")
-    ext = os.path.splitext(file.filename or "")[1] or ".mp4"
     temp_path = f"/tmp/{uuid4()}{ext}"
+    video_id = str(uuid4())
 
+    # Save uploaded bytes to a stable temp path that the worker can read.
+    total_size = 0
     try:
         with open(temp_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
+            first_chunk = await file.read(8192)
+            if not first_chunk:
+                raise HTTPException(status_code=400, detail="Empty upload file")
+            _validate_video_magic(first_chunk, ext)
+            total_size = len(first_chunk)
+            f.write(first_chunk)
 
-        video_id, frames = await process_video(course_id, safe_title, temp_path)
+            while True:
+                chunk = await file.read(1024 * 1024)  # 1 MB chunks
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > MAX_VIDEO_SIZE_BYTES:
+                    raise HTTPException(status_code=413, detail="Video file too large")
+                f.write(chunk)
+    except HTTPException:
+        _safe_remove(temp_path)
+        raise
+    except Exception as exc:
+        _safe_remove(temp_path)
+        raise HTTPException(
+            status_code=400, detail=f"Could not read uploaded file: {exc}"
+        ) from exc
     finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        await file.close()
 
-    return VideoUploadResponse(
-        video_id=video_id,
+    # Create a placeholder video record in "processing" state.
+    video = Video(
+        id=video_id,
+        course_id=course_id,
         title=safe_title,
-        frame_count=len(frames),
+        file_path=temp_path,
+        status="processing",
     )
+    async with AsyncSessionLocal() as session:
+        session.add(video)
+        await session.commit()
+
+    # Enqueue background processing if Redis is connected, otherwise process inline.
+    redis = getattr(request.app.state, "redis", None)
+    if redis is not None:
+        await redis.enqueue_job(
+            process_video_task.__name__,
+            video_id,
+            course_id,
+            safe_title,
+            temp_path,
+        )
+        return VideoUploadResponse(
+            video_id=video_id,
+            title=safe_title,
+            status="processing",
+        )
+
+    # Synchronous fallback when no task queue is configured.
+    try:
+        _, frames = await process_video(course_id, safe_title, temp_path, video_id=video_id)
+        return VideoUploadResponse(
+            video_id=video_id,
+            title=safe_title,
+            status="completed",
+            frame_count=len(frames),
+        )
+    finally:
+        _safe_remove(temp_path)
 
 
 @router.post("/api/courses/{course_id}/build-graph")
-async def build_graph(course_id: str, body: BuildGraphRequest):
-    async with AsyncSessionLocal() as session:
-        course_result = await session.execute(
-            select(Course).where(Course.id == course_id)
-        )
-        if course_result.scalar_one_or_none() is None:
-            raise HTTPException(status_code=404, detail="Course not found")
+async def build_graph(
+    course_id: str,
+    body: BuildGraphRequest,
+    current_user: User = Depends(get_current_active_user),  # noqa: B008
+):
+    await _require_course_owner(course_id, current_user)
 
+    async with AsyncSessionLocal() as session:
         video_id = body.video_id
         if not video_id:
             video_result = await session.execute(

@@ -64,13 +64,20 @@ def extract_frames(
 
 
 async def process_video(
-    course_id: str, title: str, source_path: str
+    course_id: str, title: str, source_path: str, video_id: str | None = None
 ) -> tuple[str, list[VideoFrame]]:
     """Save video metadata, extract frames, and persist frame records.
 
-    Returns (video_id, list of VideoFrame ORM objects).
+    Args:
+        course_id: The course this video belongs to.
+        title: Display title for the video.
+        source_path: Temporary path to the uploaded video file.
+        video_id: Optional pre-generated video ID (used by background tasks).
+
+    Returns:
+        Tuple of (video_id, list of VideoFrame ORM objects).
     """
-    video_id = str(uuid.uuid4())
+    video_id = video_id or str(uuid.uuid4())
     target_dir = _frames_dir(video_id)
     _ensure_dir(target_dir)
 
@@ -99,16 +106,24 @@ async def process_video(
         )
         db_frames.append(frame)
 
-    video = Video(
-        id=video_id,
-        course_id=course_id,
-        title=title,
-        file_path=str(target_video),
-        duration_seconds=duration,
-    )
-
     async with AsyncSessionLocal() as session:
-        session.add(video)
+        video = await session.get(Video, video_id)
+        if video is None:
+            video = Video(
+                id=video_id,
+                course_id=course_id,
+                title=title,
+                file_path=str(target_video),
+                duration_seconds=duration,
+                status="completed",
+            )
+            session.add(video)
+        else:
+            video.title = title
+            video.file_path = str(target_video)
+            video.duration_seconds = duration
+            video.status = "completed"
+
         for frame in db_frames:
             session.add(frame)
         await session.commit()

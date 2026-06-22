@@ -2,9 +2,13 @@ services:
   - type: web
     name: tutorloop-backend
     env: docker
+    rootDir: backend
     dockerfilePath: ./Dockerfile
     plan: starter
-    healthCheckPath: /health
+    healthCheckPath: /ready
+    # Run migrations once before deploying new instances instead of racing
+    # on startup in every replica.
+    preDeployCommand: alembic upgrade head
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -15,6 +19,8 @@ services:
       - key: NEO4J_USER
         sync: false
       - key: NEO4J_PASSWORD
+        sync: false
+      - key: REDIS_URL
         sync: false
       - key: LLM_API_KEYS
         sync: false
@@ -28,8 +34,65 @@ services:
         value: qwen3.5-4b
       - key: UPLOAD_DIR
         value: /app/uploads
+      - key: SECRET_KEY
+        generateValue: true
+      - key: RUN_ALEMBIC_MIGRATIONS
+        value: "false"
       - key: SENTRY_DSN
         sync: false
+      - key: RECOMMEND_STRATEGY
+        value: mastery_gap
+      - key: EMBEDDING_MODEL
+        value: sentence-transformers/all-MiniLM-L6-v2
+
+  - type: worker
+    name: tutorloop-worker
+    env: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    dockerCommand: arq app.tasks.worker.WorkerSettings
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tutorloop-postgres
+          property: connectionString
+      - key: NEO4J_URI
+        sync: false
+      - key: NEO4J_USER
+        sync: false
+      - key: NEO4J_PASSWORD
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: LLM_API_KEYS
+        sync: false
+      - key: LLM_BASE_URLS
+        sync: false
+      - key: LLM_MODELS
+        sync: false
+      - key: LOCAL_BASE_URL
+        value: http://localhost:8001/v1
+      - key: LOCAL_MODEL
+        value: qwen3.5-4b
+      - key: UPLOAD_DIR
+        value: /app/uploads
+      - key: SECRET_KEY
+        generateValue: true
+      - key: RUN_ALEMBIC_MIGRATIONS
+        value: "false"
+      - key: SENTRY_DSN
+        sync: false
+      - key: RECOMMEND_STRATEGY
+        value: mastery_gap
+      - key: EMBEDDING_MODEL
+        value: sentence-transformers/all-MiniLM-L6-v2
+      - key: ARQ_MAX_JOBS
+        value: "10"
+      - key: ARQ_JOB_TIMEOUT
+        value: "600"
+      - key: ARQ_KEEP_RESULT
+        value: "3600"
 
 databases:
   - name: tutorloop-postgres

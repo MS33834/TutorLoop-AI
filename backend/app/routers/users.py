@@ -2,8 +2,9 @@
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.models.db import User
 from app.schemas import (
     InteractionCreate,
     InteractionResponse,
@@ -12,6 +13,7 @@ from app.schemas import (
     ReportResponse,
 )
 from app.services import bkt_engine, recommendation, report_service
+from app.services.auth_service import get_current_active_user
 
 logger = logging.getLogger(__name__)
 
@@ -19,14 +21,22 @@ router = APIRouter()
 
 
 @router.post("/api/interactions", response_model=InteractionResponse)
-async def create_interaction(body: InteractionCreate):
-    if not body.user_id or not body.course_id:
+async def create_interaction(
+    body: InteractionCreate,
+    current_user: User = Depends(get_current_active_user),
+):
+    if not body.course_id:
         raise HTTPException(
-            status_code=422, detail="user_id and course_id are required"
+            status_code=422, detail="course_id is required"
+        )
+
+    if body.user_id and body.user_id != current_user.id:
+        raise HTTPException(
+            status_code=403, detail="不能为其他用户提交交互记录"
         )
 
     interaction = await bkt_engine.record_interaction(
-        user_id=body.user_id,
+        user_id=current_user.id,
         course_id=body.course_id,
         video_id=body.video_id,
         video_timestamp=body.video_timestamp,
@@ -41,7 +51,7 @@ async def create_interaction(body: InteractionCreate):
     if body.node_id is not None and body.is_correct is not None:
         try:
             await bkt_engine.update_mastery(
-                user_id=body.user_id,
+                user_id=current_user.id,
                 node_id=body.node_id,
                 is_correct=body.is_correct,
             )
@@ -53,25 +63,27 @@ async def create_interaction(body: InteractionCreate):
     return InteractionResponse(**interaction)
 
 
-@router.get("/api/users/{user_id}/mastery", response_model=list[MasteryItem])
-async def get_user_mastery(
-    user_id: str, course_id: str = Query(..., description="Course ID")
+@router.get("/api/users/me/mastery", response_model=list[MasteryItem])
+async def get_my_mastery(
+    course_id: str = Query(..., description="Course ID"),
+    current_user: User = Depends(get_current_active_user),
 ):
     if not course_id:
         raise HTTPException(status_code=422, detail="course_id is required")
 
-    return await bkt_engine.get_mastery(user_id, course_id)
+    return await bkt_engine.get_mastery(current_user.id, course_id)
 
 
-@router.get("/api/users/{user_id}/recommend", response_model=RecommendationResponse)
-async def recommend_for_user(
-    user_id: str, course_id: str = Query(..., description="Course ID")
+@router.get("/api/users/me/recommend", response_model=RecommendationResponse)
+async def recommend_for_me(
+    course_id: str = Query(..., description="Course ID"),
+    current_user: User = Depends(get_current_active_user),
 ):
     if not course_id:
         raise HTTPException(status_code=422, detail="course_id is required")
 
     try:
-        rec = await recommendation.recommend_next(user_id, course_id)
+        rec = await recommendation.recommend_next(current_user.id, course_id)
     except Exception as exc:
         logger.warning("Recommendation failed: %s", exc)
         return RecommendationResponse(
@@ -88,15 +100,16 @@ async def recommend_for_user(
     return RecommendationResponse(recommendation=rec)
 
 
-@router.get("/api/users/{user_id}/report", response_model=ReportResponse)
-async def report_for_user(
-    user_id: str, course_id: str = Query(..., description="Course ID")
+@router.get("/api/users/me/report", response_model=ReportResponse)
+async def report_for_me(
+    course_id: str = Query(..., description="Course ID"),
+    current_user: User = Depends(get_current_active_user),
 ):
     if not course_id:
         raise HTTPException(status_code=422, detail="course_id is required")
 
     try:
-        return await report_service.generate_report(user_id, course_id)
+        return await report_service.generate_report(current_user.id, course_id)
     except Exception as exc:
         logger.warning("Report generation failed: %s", exc)
         raise HTTPException(

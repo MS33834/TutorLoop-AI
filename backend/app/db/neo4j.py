@@ -2,7 +2,7 @@
 
 import logging
 
-from neo4j import AsyncGraphDatabase, AsyncDriver
+from neo4j import AsyncDriver, AsyncGraphDatabase
 
 from app.config import settings
 

@@ -23,13 +23,13 @@ watch(() => props.courseId, () => {
   loadReport()
 })
 
-watch(() => user.userId, () => {
+watch(() => user.isLoggedIn, () => {
   loadReport()
 })
 
 async function loadReport() {
-  if (!user.userId) {
-    error.value = '请先设置用户身份'
+  if (!user.isLoggedIn) {
+    error.value = '请先登录'
     report.value = null
     return
   }
@@ -42,7 +42,7 @@ async function loadReport() {
   error.value = ''
   try {
     const data = await apiFetch(
-      `/api/users/${user.userId}/report?course_id=${encodeURIComponent(props.courseId)}`
+      `/api/users/me/report?course_id=${encodeURIComponent(props.courseId)}`
     )
     report.value = data
   } catch (err) {
@@ -53,44 +53,57 @@ async function loadReport() {
   }
 }
 
+function normalizePercent(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return 0
+  let num = typeof value === 'number' ? value : Number(value)
+  if (Number.isNaN(num)) return 0
+  if (num >= 0 && num <= 1) num = Math.round(num * 100)
+  return Math.round(Math.min(100, Math.max(0, num)))
+}
+
 function formatPercent(value) {
-  if (typeof value !== 'number') return '0%'
-  return `${Math.round(value * 100)}%`
+  return `${normalizePercent(value)}%`
+}
+
+function formatDate(value) {
+  if (!value) return '未知'
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? '未知' : d.toLocaleString()
 }
 
 const masteredItems = computed(() => {
-  if (!report.value) return []
+  if (!report.value?.mastery_items) return []
   return report.value.mastery_items
-    .filter((i) => i.p_known >= i.threshold)
-    .sort((a, b) => b.p_known - a.p_known)
+    .filter((i) => normalizePercent(i?.p_known) >= normalizePercent(i?.threshold))
+    .sort((a, b) => normalizePercent(b.p_known) - normalizePercent(a.p_known))
     .slice(0, 3)
 })
 
 const nextActions = computed(() => {
   if (!report.value) return []
   const actions = []
-  const s = report.value.summary
-  if (s.accuracy < 0.6) {
+  const s = report.value.summary || {}
+  if (typeof s.accuracy === 'number' && normalizePercent(s.accuracy) < 60) {
     actions.push({
       icon: '📘',
       text: '正确率偏低，建议先回顾基础知识，再尝试更难的问题。',
       primary: true
     })
   }
-  if (s.mastery_rate < 0.5) {
+  if (typeof s.mastery_rate === 'number' && normalizePercent(s.mastery_rate) < 50) {
     actions.push({
       icon: '🎯',
       text: '整体掌握度不足，优先完成系统推荐的薄弱知识点。',
       primary: true
     })
   }
-  if (s.recent_7d_interactions === 0) {
+  if (typeof s.recent_7d_interactions === 'number' && s.recent_7d_interactions === 0) {
     actions.push({
       icon: '📅',
       text: '最近 7 天没有学习记录，保持每日小步学习效果更佳。'
     })
   }
-  const weakest = report.value.weak_nodes[0]
+  const weakest = report.value.weak_nodes?.[0]
   if (weakest) {
     actions.push({
       icon: '🔍',
@@ -134,7 +147,7 @@ function exportReport() {
       <header class="header">
         <div class="header-main">
           <h1 class="title">{{ report.course_title || '学习报告' }}</h1>
-          <p class="subtitle">生成时间：{{ new Date(report.generated_at).toLocaleString() }}</p>
+          <p class="subtitle">生成时间：{{ formatDate(report.generated_at) }}</p>
         </div>
         <div class="header-actions">
           <button class="action-btn" type="button" @click="goToRoom">继续学习</button>
@@ -144,35 +157,35 @@ function exportReport() {
 
       <section class="overview">
         <div class="ring-card">
-          <div class="ring" :style="{ '--pct': Math.round((report.summary.average_mastery || 0) * 100) }">
-            <span class="ring-value">{{ formatPercent(report.summary.average_mastery) }}</span>
+          <div class="ring" :style="{ '--pct': normalizePercent(report.summary?.average_mastery) }">
+            <span class="ring-value">{{ formatPercent(report.summary?.average_mastery) }}</span>
           </div>
           <p class="ring-label">平均掌握度</p>
         </div>
         <div class="summary-grid">
           <div class="card">
             <p class="label">已掌握 / 总节点</p>
-            <p class="value">{{ report.summary.mastered_nodes }} / {{ report.summary.total_nodes }}</p>
+            <p class="value">{{ report.summary?.mastered_nodes ?? 0 }} / {{ report.summary?.total_nodes ?? 0 }}</p>
           </div>
           <div class="card">
             <p class="label">正确率</p>
-            <p class="value">{{ formatPercent(report.summary.accuracy) }}</p>
+            <p class="value">{{ formatPercent(report.summary?.accuracy) }}</p>
           </div>
           <div class="card">
             <p class="label">观看时长</p>
-            <p class="value">{{ report.summary.total_watch_minutes }} 分钟</p>
+            <p class="value">{{ report.summary?.total_watch_minutes ?? 0 }} 分钟</p>
           </div>
           <div class="card">
             <p class="label">交互次数</p>
-            <p class="value">{{ report.summary.interaction_count }}</p>
+            <p class="value">{{ report.summary?.interaction_count ?? 0 }}</p>
           </div>
           <div class="card">
             <p class="label">近 7 天活跃</p>
-            <p class="value">{{ report.summary.recent_7d_interactions }}</p>
+            <p class="value">{{ report.summary?.recent_7d_interactions ?? 0 }}</p>
           </div>
           <div class="card">
             <p class="label">求助次数</p>
-            <p class="value">{{ report.summary.total_help_count }}</p>
+            <p class="value">{{ report.summary?.total_help_count ?? 0 }}</p>
           </div>
         </div>
       </section>
@@ -186,8 +199,8 @@ function exportReport() {
         <h2 class="section-title">掌握度分布</h2>
         <div class="distribution">
           <div
-            v-for="item in report.mastery_items.slice(0, 10)"
-            :key="item.node_id"
+            v-for="item in (report.mastery_items || []).slice(0, 10)"
+            :key="item.node_id || item.name"
             class="dist-row"
           >
             <span class="dist-name">{{ item.name }}</span>
@@ -195,7 +208,7 @@ function exportReport() {
               <div
                 class="dist-bar-fill"
                 :style="{ width: formatPercent(item.p_known) }"
-                :class="{ mastered: item.p_known >= item.threshold }"
+                :class="{ mastered: normalizePercent(item.p_known) >= normalizePercent(item.threshold) }"
               />
             </div>
             <span class="dist-value">{{ formatPercent(item.p_known) }}</span>
@@ -206,8 +219,8 @@ function exportReport() {
       <div class="two-col">
         <section class="section">
           <h2 class="section-title">薄弱知识点 Top10</h2>
-          <ul v-if="report.weak_nodes.length" class="weak-list">
-            <li v-for="node in report.weak_nodes" :key="node.node_id" class="weak-item">
+          <ul v-if="report.weak_nodes?.length" class="weak-list">
+            <li v-for="node in report.weak_nodes" :key="node.node_id || node.name" class="weak-item">
               <span class="weak-name">{{ node.name }}</span>
               <span class="weak-gap">差距 {{ formatPercent(node.gap) }}</span>
             </li>
@@ -218,7 +231,7 @@ function exportReport() {
         <section class="section">
           <h2 class="section-title">强项 Top3</h2>
           <ul v-if="masteredItems.length" class="strength-list">
-            <li v-for="item in masteredItems" :key="item.node_id" class="strength-item">
+            <li v-for="item in masteredItems" :key="item.node_id || item.name" class="strength-item">
               <span class="strength-name">{{ item.name }}</span>
               <span class="strength-value">{{ formatPercent(item.p_known) }}</span>
             </li>

@@ -9,6 +9,7 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: backend
@@ -17,12 +18,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -r requirements.txt
-      - run: python -m compileall app
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      # Scoped to correctness/import rules while the team pays down historical
+      # style debt (UP045, B008, B905, etc.). Re-enable full ruff rules after
+      # formatting and fixing the remaining lints.
+      - run: ruff check --select E,W,F,I --ignore E501 app tests
+      # Format and typecheck are intentionally skipped in CI until pre-existing
+      # debt is resolved. Run `ruff format --check app tests` and `mypy app tests`
+      # locally before re-enabling.
+      # - run: ruff format --check app tests
+      # - run: mypy app tests
+      - run: python -m compileall app tests
+      - run: pytest
       - run: docker build -t tutorloop-backend:test .
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: frontend

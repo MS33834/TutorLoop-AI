@@ -29,17 +29,32 @@ onErrorCaptured((err) => {
   return true
 })
 
-function formatPercent(value) {
-  if (typeof value !== 'number') return 0
-  return Math.round(value * 100)
+function normalizePercent(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return 0
+  if (typeof value !== 'number') {
+    const parsed = Number(value)
+    if (Number.isNaN(parsed)) return 0
+    value = parsed
+  }
+  // 兼容后端返回的 0-1 小数和 0-100 百分数
+  if (value >= 0 && value <= 1) return Math.round(value * 100)
+  return Math.round(Math.min(100, Math.max(0, value)))
+}
+
+function itemKey(item, index) {
+  return item?.node_id || item?.name || `item-${index}`
 }
 
 const displayItems = computed(() => {
-  const list = (props.items || []).map((item) => ({
-    ...item,
-    pKnownPercent: formatPercent(item.p_known),
-    thresholdPercent: formatPercent(item.threshold)
-  }))
+  const list = (props.items || [])
+    .filter((item) => item && typeof item === 'object')
+    .map((item, index) => ({
+      ...item,
+      _key: itemKey(item, index),
+      pKnownPercent: normalizePercent(item.p_known ?? item.pKnownPercent),
+      thresholdPercent: normalizePercent(item.threshold ?? item.thresholdPercent)
+    }))
+    .filter((item) => item.name)
 
   if (list.length <= 8) return list
 
@@ -123,14 +138,14 @@ const chartOptions = computed(() => ({
   <div class="mastery-radar">
     <h3 class="title">掌握度雷达</h3>
 
-    <div v-if="!props.items || props.items.length === 0" class="fallback">
+    <div v-if="!displayItems.length" class="fallback">
       <p>暂无掌握度数据</p>
     </div>
 
     <div v-else-if="chartError" class="fallback-list">
       <p class="fallback-hint">图表渲染失败，已切换为文本列表</p>
       <ul>
-        <li v-for="item in displayItems" :key="item.name">
+        <li v-for="item in displayItems" :key="item._key">
           <span class="name">{{ item.name }}</span>
           <span class="value" :class="{ weak: item.pKnownPercent < item.thresholdPercent }">
             {{ item.pKnownPercent }}% / 阈值 {{ item.thresholdPercent }}%
@@ -139,7 +154,7 @@ const chartOptions = computed(() => ({
       </ul>
     </div>
 
-    <div v-else class="chart-wrapper">
+    <div v-else class="chart-wrapper" role="img" aria-label="掌握度雷达图">
       <Radar :data="chartData" :options="chartOptions" />
     </div>
   </div>

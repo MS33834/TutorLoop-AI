@@ -1,12 +1,61 @@
 """Pydantic request/response schemas."""
 
-from typing import Any, Optional
+import re
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+
+class UserRegister(BaseModel):
+    username: str = Field(..., min_length=2, max_length=64)
+    email: Optional[EmailStr] = Field(None, max_length=255)
+    password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("username")
+    @classmethod
+    def _normalize_username(cls, value: str) -> str:
+        return value.strip().lower()
+
+    @field_validator("password")
+    @classmethod
+    def _strong_password(cls, value: str) -> str:
+        if not re.search(r"[a-z]", value):
+            raise ValueError("密码必须包含小写字母")
+        if not re.search(r"[A-Z]", value):
+            raise ValueError("密码必须包含大写字母")
+        if not re.search(r"\d", value):
+            raise ValueError("密码必须包含数字")
+        if not re.search(r"[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>/?]", value):
+            raise ValueError("密码必须包含特殊字符")
+        return value
+
+
+class UserLogin(BaseModel):
+    username: str = Field(..., min_length=2, max_length=64)
+    password: str = Field(..., min_length=1, max_length=128)
+
+    @field_validator("username")
+    @classmethod
+    def _normalize_username(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class UserResponse(BaseModel):
+    id: str
+    username: str
+    email: Optional[str]
+    role: str
+    created_at: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
 
 
 class Message(BaseModel):
-    role: str = Field(..., examples=["user"])
+    role: Literal["system", "user", "assistant"] = Field(..., examples=["user"])
     content: str = Field(..., max_length=4000, examples=["如何解一元一次方程？"])
 
 
@@ -33,7 +82,7 @@ class HealthResponse(BaseModel):
 
 
 class InteractionCreate(BaseModel):
-    user_id: str = Field(..., min_length=1, max_length=64)
+    user_id: Optional[str] = Field(None, min_length=1, max_length=64)
     course_id: str = Field(..., min_length=1, max_length=64)
     video_id: Optional[str] = Field(None, max_length=64)
     video_timestamp: Optional[float] = Field(None, ge=0)

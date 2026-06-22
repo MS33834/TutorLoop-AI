@@ -48,22 +48,49 @@ const selectedNodeId = ref('')
 const pendingFeedbackCorrect = ref(false)
 const feedbackLoading = ref(false)
 
+let streamAbortController = null
+let isUnmounted = false
+
 const courseId = computed(() => course.value?.id || props.slug)
 
 onMounted(() => {
+  chat.setRoom(props.slug)
   loadCourse()
 })
 
 onBeforeUnmount(() => {
+  isUnmounted = true
+  cancelStream()
   sendWatchRecord()
 })
 
-watch(() => props.slug, loadCourse)
+watch(() => props.slug, (newSlug, oldSlug) => {
+  if (newSlug !== oldSlug) {
+    cancelStream()
+    resetFeedbackState()
+    chat.setRoom(newSlug)
+  }
+  loadCourse()
+})
 
 watch(currentVideo, () => {
   watchSeconds.value = 0
   lastTickAt.value = null
 })
+
+function cancelStream() {
+  if (streamAbortController) {
+    streamAbortController.abort()
+    streamAbortController = null
+  }
+}
+
+function resetFeedbackState() {
+  feedbackSubmittedForIndex.value = -1
+  showNodePicker.value = false
+  selectedNodeId.value = ''
+  pendingFeedbackCorrect.value = false
+}
 
 async function loadCourse() {
   pageLoading.value = true
@@ -84,10 +111,10 @@ async function loadCourse() {
 }
 
 async function loadMastery() {
-  if (!user.userId || !courseId.value) return
+  if (!user.isLoggedIn || !courseId.value) return
   try {
     const data = await apiFetch(
-      `/api/users/${user.userId}/mastery?course_id=${encodeURIComponent(courseId.value)}`
+      `/api/users/me/mastery?course_id=${encodeURIComponent(courseId.value)}`
     )
     masteryItems.value = Array.isArray(data) ? data : data?.items || []
   } catch (err) {
@@ -96,10 +123,10 @@ async function loadMastery() {
 }
 
 async function loadRecommendation() {
-  if (!user.userId || !courseId.value) return
+  if (!user.isLoggedIn || !courseId.value) return
   try {
     const data = await apiFetch(
-      `/api/users/${user.userId}/recommend?course_id=${encodeURIComponent(courseId.value)}`
+      `/api/users/me/recommend?course_id=${encodeURIComponent(courseId.value)}`
     )
     recommendation.value = data?.recommendation || data || null
   } catch (err) {
@@ -146,9 +173,8 @@ function handleError(message) {
 }
 
 async function sendWatchRecord() {
-  if (!user.userId || !courseId.value || watchSeconds.value <= 0) return
+  if (!user.isLoggedIn || !courseId.value || watchSeconds.value <= 0) return
   const payload = {
-    user_id: user.userId,
     course_id: courseId.value,
     video_id: currentVideo.value?.id || null,
     video_timestamp: currentTime.value,
@@ -228,7 +254,6 @@ async function sendFeedback(isCorrect) {
     const answerText = chat.messages[lastAssistantIndex.value]?.content || ''
 
     await sendInteraction({
-      user_id: user.userId,
       course_id: courseId.value,
       video_id: currentVideo.value?.id || null,
       video_timestamp: currentTime.value,
@@ -262,6 +287,8 @@ async function send() {
   const text = input.value.trim()
   if ((!text && !screenshot.value) || loading.value) return
 
+  loading.value = true
+
   // 每次提问前 flush 已累积的观看时长
   await sendWatchRecord()
 
@@ -270,8 +297,11 @@ async function send() {
   input.value = ''
   await scrollToBottom()
 
-  loading.value = true
   chat.addMessage('assistant', '')
+
+  // 取消上一个仍在进行的流
+  cancelStream()
+  streamAbortController = new AbortController()
 
   try {
     const history = chat.messages
@@ -290,7 +320,11 @@ async function send() {
 
     const response = await fetch(`${API_BASE}/api/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      signal: streamAbortController.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(user.token ? { Authorization: `Bearer ${user.token}` } : {})
+      },
       body: JSON.stringify(body)
     })
 
@@ -305,6 +339,11 @@ async function send() {
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
+
+      if (isUnmounted) {
+        reader.cancel().catch(() => {})
+        break
+      }
 
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
@@ -331,9 +370,15 @@ async function send() {
       }
     }
   } catch (err) {
-    handleError(err.message || '网络错误，请稍后重试')
+    if (err.name === 'AbortError') {
+      // 用户主动取消或组件卸载，静默处理
+      chat.updateLastAssistantContent('（已取消）')
+    } else {
+      handleError(err.message || '网络错误，请稍后重试')
+    }
   } finally {
     loading.value = false
+    streamAbortController = null
     screenshot.value = ''
     await scrollToBottom()
   }
@@ -396,8 +441,8 @@ function onKeydown(e) {
 
         <div ref="messageList" class="message-list">
           <div
-            v-for="(message, index) in chat.messages"
-            :key="index"
+            v-for="message in chat.messages"
+            :key="message.id"
             class="message"
             :class="message.role"
           >
@@ -646,7 +691,7 @@ function onKeydown(e) {
 }
 
 .placeholder {
-  color: #9ca3af;
+  color: #6b7280;
 }
 
 .screenshot-preview {

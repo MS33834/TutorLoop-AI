@@ -1,6 +1,6 @@
 """Application settings loaded from environment variables."""
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,6 +21,18 @@ class Settings(BaseSettings):
     app_host: str = Field(default="0.0.0.0", alias="APP_HOST")
     app_port: int = Field(default=8000, alias="APP_PORT")
 
+    secret_key: str = Field(default="change-me-in-production", alias="SECRET_KEY")
+    access_token_expire_minutes: int = Field(default=10080, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
+
+    @field_validator("secret_key")
+    @classmethod
+    def _validate_secret_key(cls, value: str) -> str:
+        if not value or len(value) < 32:
+            raise ValueError("SECRET_KEY must be at least 32 characters long")
+        if value == "change-me-in-production":
+            raise ValueError("SECRET_KEY is using the default insecure value; set a strong random key")
+        return value
+
     database_url: str = Field(
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/tutorloop",
         alias="DATABASE_URL",
@@ -28,6 +40,8 @@ class Settings(BaseSettings):
     neo4j_uri: str = Field(default="bolt://localhost:7687", alias="NEO4J_URI")
     neo4j_user: str = Field(default="neo4j", alias="NEO4J_USER")
     neo4j_password: str = Field(default="", alias="NEO4J_PASSWORD")
+
+    redis_url: str = Field(default="redis://localhost:6379", alias="REDIS_URL")
 
     cors_origins_raw: str = Field(default="http://localhost:5173", alias="CORS_ORIGINS")
 
@@ -68,6 +82,15 @@ class Settings(BaseSettings):
         if value not in allowed:
             raise ValueError(f"RECOMMEND_STRATEGY must be one of {allowed}")
         return value
+
+    @model_validator(mode="after")
+    def _validate_llm_key_lists(self):
+        keys = [x for x in self.llm_api_keys_raw.split(",") if x.strip()] if self.llm_api_keys_raw else []
+        bases = [x for x in self.llm_base_urls_raw.split(",") if x.strip()] if self.llm_base_urls_raw else []
+        models = [x for x in self.llm_models_raw.split(",") if x.strip()] if self.llm_models_raw else []
+        if not (len(keys) == len(bases) == len(models)):
+            raise ValueError("LLM_API_KEYS, LLM_BASE_URLS, LLM_MODELS must have the same length")
+        return self
 
     @property
     def cors_origins(self) -> list[str]:

@@ -1,42 +1,78 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
+import { apiFetch } from '../api/client.js'
 
-const STORAGE_KEY = 'tutorloop_user_id'
+const USER_KEY = 'tutorloop_user'
+const TOKEN_KEY = 'tutorloop_token'
 
-function generateUserId() {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
+function loadJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? JSON.parse(raw) : fallback
+  } catch {
+    return fallback
   }
-  return `user-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 export const useUserStore = defineStore('user', () => {
-  const userId = ref('')
+  const token = ref(loadJson(TOKEN_KEY, ''))
+  const user = ref(loadJson(USER_KEY, null))
+  const isLoggedIn = computed(() => Boolean(token.value && user.value?.id))
 
-  function initUserId() {
-    let id = ''
+  function setAuth(newToken, newUser) {
+    token.value = newToken
+    user.value = newUser
     try {
-      id = localStorage.getItem(STORAGE_KEY) || ''
+      localStorage.setItem(TOKEN_KEY, JSON.stringify(newToken))
+      localStorage.setItem(USER_KEY, JSON.stringify(newUser))
     } catch {
-      // localStorage 不可用时直接生成
+      // ignore
     }
+  }
 
-    if (!id) {
-      id = generateUserId()
+  function clearAuth() {
+    token.value = ''
+    user.value = null
+    try {
+      localStorage.removeItem(TOKEN_KEY)
+      localStorage.removeItem(USER_KEY)
+    } catch {
+      // ignore
+    }
+  }
+
+  async function fetchProfile() {
+    if (!token.value) return
+    try {
+      const profile = await apiFetch('/api/auth/me')
+      user.value = profile
       try {
-        localStorage.setItem(STORAGE_KEY, id)
+        localStorage.setItem(USER_KEY, JSON.stringify(profile))
       } catch {
         // ignore
       }
+    } catch {
+      clearAuth()
     }
-
-    userId.value = id
   }
 
-  initUserId()
+  // Restore legacy user_id if present, then migrate to new auth
+  const legacyId = localStorage.getItem('tutorloop_user_id')
+  if (legacyId && !isLoggedIn.value) {
+    try {
+      localStorage.removeItem('tutorloop_user_id')
+    } catch {
+      // ignore
+    }
+  }
 
   return {
-    userId,
-    initUserId
+    token,
+    user,
+    isLoggedIn,
+    userId: computed(() => user.value?.id || ''),
+    setAuth,
+    clearAuth,
+    fetchProfile
   }
 })

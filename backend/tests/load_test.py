@@ -15,7 +15,6 @@ async def one_chat(base_url: str, client: httpx.AsyncClient) -> dict:
         json={"messages": [{"role": "user", "content": "你好"}]},
         timeout=60,
     )
-    elapsed = time.perf_counter() - start
     response.raise_for_status()
     content = ""
     first_token_time = None

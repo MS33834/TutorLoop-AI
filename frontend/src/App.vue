@@ -1,26 +1,48 @@
 <script setup>
-import { RouterLink, RouterView } from 'vue-router'
+import { onMounted } from 'vue'
+import { RouterLink, RouterView, useRouter } from 'vue-router'
+import { useUserStore } from './stores/user.js'
+import ErrorBoundary from './components/ErrorBoundary.vue'
+
+const router = useRouter()
+const userStore = useUserStore()
+
+onMounted(() => {
+  userStore.fetchProfile()
+})
+
+function logout() {
+  userStore.clearAuth()
+  router.push('/')
+}
 </script>
 
 <template>
+  <a href="#main-content" class="skip-link">跳转到主要内容</a>
   <div class="app">
     <header class="header">
-      <RouterLink to="/" class="brand">
-        <span class="brand-logo">TL</span>
+      <RouterLink to="/" class="brand" aria-label="TutorLoop AI 首页">
+        <span class="brand-logo" aria-hidden="true">TL</span>
         <span class="brand-name">TutorLoop AI</span>
       </RouterLink>
-      <nav class="nav">
+      <nav class="nav" aria-label="主导航">
         <RouterLink to="/" class="nav-link">首页</RouterLink>
-        <RouterLink to="/upload" class="nav-link">上传课程</RouterLink>
+        <RouterLink v-if="userStore.isLoggedIn" to="/upload" class="nav-link">上传课程</RouterLink>
         <a
           href="https://github.com/MS33834/TutorLoop-AI"
           target="_blank"
           rel="noopener noreferrer"
           class="nav-link"
+          aria-label="在 GitHub 上查看 TutorLoop AI 源码（新标签页打开）"
         >GitHub</a>
+        <template v-if="userStore.isLoggedIn">
+          <span class="nav-user" aria-label="当前登录用户">{{ userStore.user?.username }}</span>
+          <button class="nav-link logout" type="button" @click="logout" aria-label="退出登录">退出</button>
+        </template>
+        <RouterLink v-else to="/login" class="nav-link login">登录</RouterLink>
       </nav>
     </header>
-    <main class="main">
+    <main id="main-content" class="main" tabindex="-1">
       <ErrorBoundary>
         <RouterView />
       </ErrorBoundary>
@@ -71,6 +93,33 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 2px;
+  border-radius: 0.25rem;
+}
+
+.skip-link {
+  position: absolute;
+  top: -2.5rem;
+  left: 0.75rem;
+  z-index: 1000;
+  padding: 0.5rem 0.75rem;
+  background: var(--tl-primary);
+  color: #ffffff;
+  text-decoration: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border-radius: 0 0 var(--tl-radius-sm) var(--tl-radius-sm);
+  transition: top 0.15s ease;
+}
+
+.skip-link:focus {
+  top: 0;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.4);
+}
+
 .app {
   display: flex;
   flex-direction: column;
@@ -93,6 +142,7 @@ body {
   align-items: center;
   gap: 0.5rem;
   text-decoration: none;
+  border-radius: var(--tl-radius-sm);
 }
 
 .brand-logo {
@@ -122,11 +172,15 @@ body {
 }
 
 .nav-link {
-  color: #4b5563;
+  color: #374151;
   text-decoration: none;
   padding: 0.375rem 0.625rem;
   border-radius: 0.375rem;
   transition: background 0.15s ease, color 0.15s ease;
+  background: none;
+  border: none;
+  font-size: 0.9375rem;
+  cursor: pointer;
 }
 
 .nav-link:hover {
@@ -135,9 +189,24 @@ body {
 }
 
 .nav-link.router-link-active {
-  color: #2563eb;
+  color: #1d4ed8;
   background: #eff6ff;
   font-weight: 500;
+}
+
+.nav-link.login {
+  color: #ffffff;
+  background: #2563eb;
+}
+
+.nav-link.login:hover {
+  background: #1d4ed8;
+}
+
+.nav-user {
+  padding: 0.375rem 0.625rem;
+  color: #4b5563;
+  font-size: 0.875rem;
 }
 
 .main {
@@ -146,12 +215,16 @@ body {
   overflow: auto;
 }
 
+.main:focus {
+  outline: none;
+}
+
 .footer {
   flex-shrink: 0;
   padding: 0.75rem;
   text-align: center;
   font-size: 0.75rem;
-  color: #9ca3af;
+  color: #6b7280;
   background: #ffffff;
   border-top: 1px solid #e5e7eb;
 }

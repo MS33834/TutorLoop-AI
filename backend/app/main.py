@@ -17,7 +17,8 @@ from app.config import settings
 from app.db.neo4j import close_driver, get_driver
 from app.db.postgres import close_db, engine, init_db
 from app.limiter import limiter
-from app.routers import chat, courses, users
+from app.routers import auth, chat, courses, users
+from app.tasks.worker import _redis_settings
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,22 @@ if os.environ.get("SENTRY_DSN"):
 async def lifespan(app: FastAPI):
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
     await init_db()
+
+    redis_pool = None
+    if os.environ.get("REDIS_URL"):
+        try:
+            from arq import create_pool
+
+            redis_pool = await create_pool(_redis_settings())
+            app.state.redis = redis_pool
+            logger.info("Connected to Redis task queue")
+        except Exception as exc:
+            logger.warning("Could not connect to Redis task queue: %s", exc)
+
     yield
+
+    if redis_pool is not None:
+        await redis_pool.close()
     await close_db()
     await close_driver()
 
@@ -71,6 +87,7 @@ async def security_headers(request: Request, call_next):
     return response
 
 
+app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(courses.router)
 app.include_router(users.router)

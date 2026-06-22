@@ -32,7 +32,11 @@
 
 ## 2. 本地一键启动
 
+Docker Compose 启动前，先复制根目录环境变量示例并填写：
+
 ```bash
+cp env.example .env
+# 编辑 .env，至少修改 SECRET_KEY、LLM_API_KEYS 等必填项
 docker compose up --build
 ```
 
@@ -89,7 +93,7 @@ kubectl create secret generic tutorloop-secrets \
 
 ## 5. 监控
 
-- 健康检查：`GET /health`
+- 健康检查：`GET /ready`（存活检查：`GET /live`）
 - Sentry：配置 `SENTRY_DSN` 后自动上报后端异常与前端错误。
 - 负载测试：`python tests/load_test.py --base-url https://your-api.com`
 

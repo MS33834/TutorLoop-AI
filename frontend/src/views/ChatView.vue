@@ -1,14 +1,32 @@
 <script setup>
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useChatStore } from '../stores/chat.js'
+import { useUserStore } from '../stores/user.js'
 
 const chat = useChatStore()
+const user = useUserStore()
 const input = ref('')
 const loading = ref(false)
 const error = ref('')
 const messageList = ref(null)
+let abortController = null
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+
+onMounted(() => {
+  chat.setRoom('global')
+})
+
+onBeforeUnmount(() => {
+  cancelStream()
+})
+
+function cancelStream() {
+  if (abortController) {
+    abortController.abort()
+    abortController = null
+  }
+}
 
 async function scrollToBottom() {
   await nextTick()
@@ -26,19 +44,25 @@ async function send() {
   const text = input.value.trim()
   if (!text || loading.value) return
 
+  loading.value = true
   error.value = ''
   chat.addMessage('user', text)
   input.value = ''
   await scrollToBottom()
 
-  loading.value = true
   chat.addMessage('assistant', '')
+
+  // 取消上一个仍在进行的流
+  cancelStream()
+  abortController = new AbortController()
 
   try {
     const response = await fetch(`${API_BASE}/api/chat`, {
       method: 'POST',
+      signal: abortController.signal,
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        ...(user.token ? { Authorization: `Bearer ${user.token}` } : {})
       },
       body: JSON.stringify({ messages: [{ role: 'user', content: text }] })
     })
@@ -80,9 +104,15 @@ async function send() {
       }
     }
   } catch (err) {
-    handleError(err.message || '网络错误，请稍后重试')
+    if (err.name === 'AbortError') {
+      // 用户主动取消或组件卸载，静默处理
+      chat.updateLastAssistantContent('（已取消）')
+    } else {
+      handleError(err.message || '网络错误，请稍后重试')
+    }
   } finally {
     loading.value = false
+    abortController = null
     await scrollToBottom()
   }
 }
@@ -99,8 +129,8 @@ function onKeydown(e) {
   <div class="chat">
     <div ref="messageList" class="message-list">
       <div
-        v-for="(message, index) in chat.messages"
-        :key="index"
+        v-for="message in chat.messages"
+        :key="message.id"
         class="message"
         :class="message.role"
       >
@@ -192,7 +222,7 @@ function onKeydown(e) {
 }
 
 .placeholder {
-  color: #9ca3af;
+  color: #6b7280;
 }
 
 .error-banner {

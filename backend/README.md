@@ -46,6 +46,28 @@ curl -N -X POST http://localhost:8000/api/chat \
   -d '{"messages": [{"role": "user", "content": "你好"}]}'
 ```
 
+## 数据库迁移
+
+开发环境默认使用 SQLAlchemy `create_all()` 自动建表。生产环境建议通过 Alembic 管理：
+
+```bash
+alembic upgrade head
+```
+
+或在启动时设置 `RUN_ALEMBIC_MIGRATIONS=true` 自动执行。
+
+## 异步任务队列
+
+视频处理与知识图谱抽取会占用大量 CPU/GPU 与 IO，建议通过 ARQ + Redis 在后台执行。
+
+启动 worker：
+
+```bash
+arq app.tasks.worker.WorkerSettings
+```
+
+若未配置 `REDIS_URL`，上传接口会回退到同步处理。
+
 ## 配置说明
 
 | 变量 | 说明 |
@@ -56,3 +78,8 @@ curl -N -X POST http://localhost:8000/api/chat \
 | `LOCAL_BASE_URL` | 本地兜底模型服务地址 |
 | `LOCAL_MODEL` | 本地兜底模型名 |
 | `APP_HOST` / `APP_PORT` | 服务监听地址与端口 |
+| `DATABASE_URL` | PostgreSQL 连接串 |
+| `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD` | Neo4j 连接信息 |
+| `REDIS_URL` | Redis 连接串（用于 ARQ 任务队列） |
+| `RUN_ALEMBIC_MIGRATIONS` | 启动时是否执行 Alembic 迁移 |
+| `RECOMMEND_STRATEGY` | 推荐策略：`mastery_gap` 或 `balanced` |

@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from app.config import settings
 from app.db.neo4j import get_graph
 from app.db.postgres import AsyncSessionLocal
+from app.db.vector_search import search_similar_frames_in_course
 from app.models.db import Video, VideoFrame
 from app.services import bkt_engine
 from app.services.embedding_service import encode_text
@@ -59,13 +60,37 @@ async def _fetch_course_frames(course_id: str) -> list[VideoFrame]:
 
 
 async def _find_best_frame(course_id: str, node: dict) -> dict | None:
-    """Find the video frame most similar to the node text."""
+    """Find the video frame most similar to the node text.
+
+    Uses pgvector HNSW approximate nearest neighbor search when available,
+    falling back to brute-force cosine similarity if the vector search fails.
+    """
+    query_text = _node_text(node)
+    query_embedding = encode_text(query_text)
+
+    # Try pgvector ANN search first (O(log n) with HNSW index).
+    try:
+        similar = await search_similar_frames_in_course(
+            course_id=course_id,
+            query_embedding=query_embedding,
+            top_k=1,
+        )
+        if similar:
+            row = similar[0]
+            return {
+                "video_id": row["video_id"],
+                "timestamp_seconds": row["timestamp_seconds"],
+                "file_path": row["file_path"],
+                "caption": row["caption"],
+                "similarity": round(1.0 - float(row["distance"]), 4),
+            }
+    except Exception as exc:
+        logger.warning("Vector frame search failed, using fallback: %s", exc)
+
+    # Fallback: brute-force scan over all course frames.
     frames = await _fetch_course_frames(course_id)
     if not frames:
         return None
-
-    query_text = _node_text(node)
-    query_embedding = encode_text(query_text)
 
     best_frame = frames[0]
     best_score = -1.0
