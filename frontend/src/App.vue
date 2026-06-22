@@ -28,6 +28,7 @@ function logout() {
       <nav class="nav" aria-label="主导航">
         <RouterLink to="/" class="nav-link">首页</RouterLink>
         <RouterLink v-if="userStore.isLoggedIn" to="/upload" class="nav-link">上传课程</RouterLink>
+        <RouterLink v-if="userStore.isLoggedIn" to="/dashboard" class="nav-link">房间管理</RouterLink>
         <a
           href="https://github.com/MS33834/TutorLoop-AI"
           target="_blank"

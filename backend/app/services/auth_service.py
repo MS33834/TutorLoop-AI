@@ -92,3 +92,21 @@ async def get_current_active_user(user: User = Depends(get_current_user)) -> Use
             detail="账号已被禁用",
         )
     return user
+
+
+async def get_optional_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Optional[User]:
+    """Return current user if a valid token is provided, otherwise None."""
+    if not credentials or not credentials.credentials:
+        return None
+    try:
+        payload = _decode_token(credentials.credentials)
+    except HTTPException:
+        return None
+    user_id: Optional[str] = payload.get("sub")
+    if not user_id:
+        return None
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(User).where(User.id == user_id))
+        return result.scalar_one_or_none()

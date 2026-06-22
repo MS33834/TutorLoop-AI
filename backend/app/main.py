@@ -17,7 +17,7 @@ from app.config import settings
 from app.db.neo4j import close_driver, get_driver
 from app.db.postgres import close_db, engine, init_db
 from app.limiter import limiter
-from app.routers import auth, chat, courses, users
+from app.routers import auth, chat, courses, rooms, users
 from app.tasks.worker import _redis_settings
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Requested-With", "Accept"],
 )
 
@@ -90,6 +90,7 @@ async def security_headers(request: Request, call_next):
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(courses.router)
+app.include_router(rooms.router)
 app.include_router(users.router)
 
 

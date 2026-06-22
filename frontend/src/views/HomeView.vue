@@ -9,6 +9,7 @@ const userStore = useUserStore()
 const courses = ref([])
 const loading = ref(false)
 const error = ref('')
+const roomSlugInput = ref('')
 
 const personas = [
   {
@@ -258,8 +259,7 @@ function goToRoom(course) {
     router.push('/login')
     return
   }
-  const slug = course.default_room_slug || String(course.id)
-  router.push(`/room/${slug}`)
+  router.push(`/dashboard?course=${encodeURIComponent(course.id)}`)
 }
 
 function goToGraph(course) {
@@ -271,11 +271,21 @@ function goToGraph(course) {
 }
 
 function enterDemo() {
+  router.push('/room/demo')
+}
+
+function enterRoomBySlug() {
+  const slug = roomSlugInput.value.trim()
+  if (!slug) return
+  router.push(`/room/${encodeURIComponent(slug)}`)
+}
+
+function goToDashboard() {
   if (!userStore.isLoggedIn) {
     router.push('/login')
     return
   }
-  router.push('/room/demo')
+  router.push('/dashboard')
 }
 </script>
 
@@ -322,6 +332,23 @@ function enterDemo() {
             :aria-label="currentPersona.label + '：' + currentPersona.secondaryAction"
           >
             {{ currentPersona.secondaryAction }}
+          </button>
+        </div>
+
+        <div class="room-entry">
+          <input
+            v-model="roomSlugInput"
+            type="text"
+            class="room-entry-input"
+            placeholder="输入房间号，例如 abc123"
+            @keydown.enter="enterRoomBySlug"
+          />
+          <button
+            class="room-entry-btn"
+            type="button"
+            @click="enterRoomBySlug"
+          >
+            进入房间
           </button>
         </div>
       </div>
@@ -427,9 +454,9 @@ function enterDemo() {
               class="btn primary"
               type="button"
               @click="goToRoom(course)"
-              :aria-label="'开始学习课程：' + course.title"
+              :aria-label="'管理课程房间：' + course.title"
             >
-              开始学习
+              {{ userStore.isLoggedIn ? '房间管理' : '需登录' }}
             </button>
             <button
               class="btn"
@@ -579,6 +606,37 @@ function enterDemo() {
 .hero-btn.primary:hover {
   background: var(--tl-primary-dark);
   border-color: var(--tl-primary-dark);
+}
+
+.room-entry {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+  max-width: 24rem;
+}
+
+.room-entry-input {
+  flex: 1;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid #dbeafe;
+  border-radius: var(--tl-radius);
+  font-size: 0.9375rem;
+  outline: none;
+}
+
+.room-entry-input:focus {
+  border-color: var(--tl-primary);
+}
+
+.room-entry-btn {
+  padding: 0.625rem 1rem;
+  border: none;
+  border-radius: var(--tl-radius);
+  background: var(--tl-primary);
+  color: #ffffff;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  cursor: pointer;
 }
 
 .hero-visual {

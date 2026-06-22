@@ -8,12 +8,14 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 
+from app.db.postgres import AsyncSessionLocal
 from app.gateway import pool, stream_chat
 from app.limiter import limiter
-from app.models.db import User
+from app.models.db import Room, User
 from app.schemas import ChatRequest, HealthResponse, KeyHealthSummary
-from app.services.auth_service import get_current_active_user
+from app.services.auth_service import get_optional_current_user
 from app.services.rag_service import retrieve_context
 
 logger = logging.getLogger(__name__)
@@ -21,6 +23,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024  # 2 MB
+
+
+async def _resolve_room_for_anonymous(room_slug: str | None) -> Room | None:
+    """Validate room slug for anonymous access and return the room."""
+    if not room_slug:
+        return None
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Room).where(Room.slug == room_slug, Room.is_active == True)
+        )
+        room = result.scalar_one_or_none()
+        if room is None:
+            raise HTTPException(status_code=404, detail="房间不存在或已关闭")
+        if not room.allow_anonymous:
+            raise HTTPException(status_code=401, detail="该房间需要登录后才能访问")
+        return room
 
 
 def _save_screenshot_if_any(screenshot: str | None) -> str | None:
@@ -101,12 +119,16 @@ async def _sse_event_stream(request: ChatRequest):
 async def chat(
     request: Request,
     body: ChatRequest,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User | None = Depends(get_optional_current_user),
 ):
     if not body.messages:
         raise HTTPException(status_code=422, detail="messages cannot be empty")
     if len(body.messages) > 50:
         raise HTTPException(status_code=422, detail="too many messages")
+
+    # Anonymous users must provide a room slug pointing to an anonymous-enabled room.
+    if current_user is None:
+        await _resolve_room_for_anonymous(body.room_slug)
 
     return StreamingResponse(
         _sse_event_stream(body),

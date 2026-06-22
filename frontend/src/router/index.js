@@ -7,6 +7,7 @@ const RoomView = () => import('../views/RoomView.vue')
 const UploadView = () => import('../views/UploadView.vue')
 const GraphView = () => import('../views/GraphView.vue')
 const ReportView = () => import('../views/ReportView.vue')
+const TeacherDashboard = () => import('../views/TeacherDashboard.vue')
 
 const routes = [
   { path: '/', name: 'home', component: HomeView },
@@ -15,13 +16,18 @@ const routes = [
     path: '/room/:slug',
     name: 'room',
     component: RoomView,
-    props: true,
-    meta: { requiresAuth: true }
+    props: true
   },
   {
     path: '/upload',
     name: 'upload',
     component: UploadView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/dashboard',
+    name: 'dashboard',
+    component: TeacherDashboard,
     meta: { requiresAuth: true }
   },
   {

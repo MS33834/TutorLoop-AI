@@ -2,9 +2,13 @@
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from datetime import datetime, timezone
 
-from app.models.db import User
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
+
+from app.db.postgres import AsyncSessionLocal
+from app.models.db import Room, User
 from app.schemas import (
     InteractionCreate,
     InteractionResponse,
@@ -13,30 +17,57 @@ from app.schemas import (
     ReportResponse,
 )
 from app.services import bkt_engine, recommendation, report_service
-from app.services.auth_service import get_current_active_user
+from app.services.auth_service import (
+    get_current_active_user,
+    get_optional_current_user,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
+async def _require_room_for_anonymous(room_id: str | None) -> Room | None:
+    """Ensure the room exists and allows anonymous access when no user is logged in."""
+    if not room_id:
+        return None
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Room).where(Room.id == room_id, Room.is_active == True)
+        )
+        room = result.scalar_one_or_none()
+        if room is None:
+            raise HTTPException(status_code=404, detail="房间不存在或已关闭")
+        if room.expires_at and room.expires_at < datetime.now(timezone.utc):
+            raise HTTPException(status_code=410, detail="房间已过期")
+        return room
+
+
 @router.post("/api/interactions", response_model=InteractionResponse)
 async def create_interaction(
     body: InteractionCreate,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User | None = Depends(get_optional_current_user),
 ):
     if not body.course_id:
         raise HTTPException(
             status_code=422, detail="course_id is required"
         )
 
-    if body.user_id and body.user_id != current_user.id:
-        raise HTTPException(
-            status_code=403, detail="不能为其他用户提交交互记录"
-        )
+    effective_user_id = current_user.id if current_user else None
+
+    if current_user is not None:
+        if body.user_id and body.user_id != current_user.id:
+            raise HTTPException(
+                status_code=403, detail="不能为其他用户提交交互记录"
+            )
+    else:
+        # Anonymous interactions must be tied to a room that allows anonymous access.
+        room = await _require_room_for_anonymous(body.room_id)
+        if room and not room.allow_anonymous:
+            raise HTTPException(status_code=401, detail="该房间需要登录后才能提交记录")
 
     interaction = await bkt_engine.record_interaction(
-        user_id=current_user.id,
+        user_id=effective_user_id,
         course_id=body.course_id,
         video_id=body.video_id,
         video_timestamp=body.video_timestamp,
@@ -46,12 +77,18 @@ async def create_interaction(
         help_count=body.help_count,
         watch_seconds=body.watch_seconds,
         node_id=body.node_id,
+        room_id=body.room_id,
     )
 
-    if body.node_id is not None and body.is_correct is not None:
+    # Only update mastery for authenticated users.
+    if (
+        effective_user_id is not None
+        and body.node_id is not None
+        and body.is_correct is not None
+    ):
         try:
             await bkt_engine.update_mastery(
-                user_id=current_user.id,
+                user_id=effective_user_id,
                 node_id=body.node_id,
                 is_correct=body.is_correct,
             )

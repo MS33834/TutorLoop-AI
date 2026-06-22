@@ -69,6 +69,38 @@ class ChatRequest(BaseModel):
     timestamp: Optional[float] = Field(None, examples=[12.5])
 
 
+class RoomCreate(BaseModel):
+    title: Optional[str] = Field(None, max_length=255)
+    password: Optional[str] = Field(None, max_length=64)
+    expires_at: Optional[str] = Field(None, examples=["2025-12-31T23:59:59+00:00"])
+    allow_anonymous: bool = True
+
+
+class RoomResponse(BaseModel):
+    id: str
+    slug: str
+    course_id: str
+    title: Optional[str]
+    allow_anonymous: bool
+    is_active: bool
+    expires_at: Optional[str]
+    created_at: str
+
+
+class RoomPublicResponse(BaseModel):
+    slug: str
+    course_id: str
+    title: Optional[str]
+    require_password: bool
+    allow_anonymous: bool
+    is_active: bool
+    expires_at: Optional[str]
+
+
+class RoomJoinRequest(BaseModel):
+    password: Optional[str] = Field(None, max_length=64)
+
+
 class KeyHealthSummary(BaseModel):
     model: str
     status: str
@@ -84,6 +116,7 @@ class HealthResponse(BaseModel):
 class InteractionCreate(BaseModel):
     user_id: Optional[str] = Field(None, min_length=1, max_length=64)
     course_id: str = Field(..., min_length=1, max_length=64)
+    room_id: Optional[str] = Field(None, max_length=64)
     video_id: Optional[str] = Field(None, max_length=64)
     video_timestamp: Optional[float] = Field(None, ge=0)
     question_text: Optional[str] = Field(None, max_length=4000)
@@ -97,6 +130,7 @@ class InteractionCreate(BaseModel):
 class InteractionResponse(BaseModel):
     id: str
     user_id: Optional[str]
+    room_id: Optional[str]
     course_id: Optional[str]
     video_id: Optional[str]
     video_timestamp: Optional[float]

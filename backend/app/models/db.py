@@ -62,6 +62,9 @@ class Course(Base):
     knowledge_nodes: Mapped[list["KnowledgeNode"]] = relationship(
         back_populates="course", cascade="all, delete-orphan"
     )
+    rooms: Mapped[list["Room"]] = relationship(
+        back_populates="course", cascade="all, delete-orphan"
+    )
 
 
 class Video(Base):
@@ -137,6 +140,32 @@ class Mastery(Base):
     updated_at: Mapped[datetime] = mapped_column(default=now_utc)
 
     node: Mapped["KnowledgeNode"] = relationship(back_populates="mastery_records")
+
+
+class Room(Base):
+    __tablename__ = "rooms"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    slug: Mapped[str] = mapped_column(
+        String(16), unique=True, nullable=False, index=True
+    )
+    course_id: Mapped[str] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    allow_anonymous: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(default=now_utc, onupdate=now_utc)
+
+    course: Mapped["Course"] = relationship(back_populates="rooms")
 
 
 class Interaction(Base):

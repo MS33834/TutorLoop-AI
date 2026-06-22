@@ -10,6 +10,7 @@ import {
 import { useChatStore } from '../stores/chat.js'
 import { useUserStore } from '../stores/user.js'
 import { apiFetch } from '../api/client.js'
+import { getRoomBySlug, joinRoom } from '../api/rooms.js'
 import VideoPlayer from '../components/VideoPlayer.vue'
 import MasteryRadar from '../components/MasteryRadar.vue'
 import RecommendCard from '../components/RecommendCard.vue'
@@ -23,6 +24,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 const chat = useChatStore()
 const user = useUserStore()
 
+const room = ref(null)
 const course = ref(null)
 const currentVideo = ref(null)
 const currentTime = ref(0)
@@ -48,10 +50,16 @@ const selectedNodeId = ref('')
 const pendingFeedbackCorrect = ref(false)
 const feedbackLoading = ref(false)
 
+const requirePassword = ref(false)
+const roomPassword = ref('')
+const passwordError = ref('')
+const roomAccessGranted = ref(false)
+
 let streamAbortController = null
 let isUnmounted = false
 
-const courseId = computed(() => course.value?.id || props.slug)
+const courseId = computed(() => course.value?.id || '')
+const roomUuid = computed(() => room.value?.id || '')
 
 onMounted(() => {
   chat.setRoom(props.slug)
@@ -97,16 +105,35 @@ async function loadCourse() {
   error.value = ''
   masteryError.value = ''
   recError.value = ''
+  passwordError.value = ''
   try {
-    course.value = await apiFetch(`/api/courses/${props.slug}`)
+    room.value = await getRoomBySlug(props.slug)
+    if (room.value.require_password && !roomAccessGranted.value) {
+      requirePassword.value = true
+      pageLoading.value = false
+      return
+    }
+    requirePassword.value = false
+    course.value = await apiFetch(`/api/courses/${room.value.course_id}`)
     const videos = course.value?.videos || []
     currentVideo.value = videos[0] || null
     await loadMastery()
     await loadRecommendation()
   } catch (err) {
-    error.value = err.message || '加载课程失败'
+    error.value = err.message || '加载房间失败'
   } finally {
     pageLoading.value = false
+  }
+}
+
+async function submitPassword() {
+  passwordError.value = ''
+  try {
+    await joinRoom(props.slug, roomPassword.value)
+    roomAccessGranted.value = true
+    await loadCourse()
+  } catch (err) {
+    passwordError.value = err.message || '密码验证失败'
   }
 }
 
@@ -173,9 +200,12 @@ function handleError(message) {
 }
 
 async function sendWatchRecord() {
-  if (!user.isLoggedIn || !courseId.value || watchSeconds.value <= 0) return
+  if (!courseId.value || watchSeconds.value <= 0) return
+  // Anonymous watch records are only stored when tied to a room.
+  if (!user.isLoggedIn && !roomUuid.value) return
   const payload = {
     course_id: courseId.value,
+    room_id: roomUuid.value || null,
     video_id: currentVideo.value?.id || null,
     video_timestamp: currentTime.value,
     node_id: recommendation.value?.node?.id || recommendation.value?.node_id || null,
@@ -201,7 +231,7 @@ async function sendWatchRecord() {
 async function sendInteraction(payload) {
   return apiFetch('/api/interactions', {
     method: 'POST',
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ ...payload, room_id: roomUuid.value || null })
   })
 }
 
@@ -397,6 +427,20 @@ function onKeydown(e) {
     <div v-if="pageLoading" class="page-status">加载中…</div>
     <div v-else-if="error && !currentVideo" class="page-status error">{{ error }}</div>
 
+    <div v-else-if="requirePassword" class="password-gate">
+      <h2 class="password-title">该房间需要密码</h2>
+      <p class="password-hint">请输入老师分享的房间密码后进入学习。</p>
+      <input
+        v-model="roomPassword"
+        type="password"
+        class="password-input"
+        placeholder="房间密码"
+        @keydown.enter="submitPassword"
+      />
+      <button class="password-btn" type="button" @click="submitPassword">进入房间</button>
+      <div v-if="passwordError" class="password-error">{{ passwordError }}</div>
+    </div>
+
     <template v-else>
       <div class="video-section">
         <div class="video-wrapper">
@@ -415,8 +459,9 @@ function onKeydown(e) {
         </div>
 
         <div class="course-info">
-          <h2 class="course-title">{{ course?.title || '学习房间' }}</h2>
+          <h2 class="course-title">{{ room?.title || course?.title || '学习房间' }}</h2>
           <p class="course-desc">{{ course?.description || '' }}</p>
+          <p class="room-slug">房间号：{{ props.slug }}</p>
         </div>
       </div>
 
@@ -872,5 +917,61 @@ function onKeydown(e) {
   color: #b91c1c;
   background: #fee2e2;
   border-radius: 0.5rem;
+}
+
+.password-gate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  height: 100%;
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.password-title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.password-hint {
+  margin: 0;
+  color: #6b7280;
+  font-size: 0.875rem;
+}
+
+.password-input {
+  width: 100%;
+  max-width: 20rem;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  font-size: 0.9375rem;
+}
+
+.password-btn {
+  width: 100%;
+  max-width: 20rem;
+  padding: 0.625rem 0.875rem;
+  border: none;
+  border-radius: 0.5rem;
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.password-error {
+  color: #b91c1c;
+  font-size: 0.875rem;
+}
+
+.room-slug {
+  margin: 0.25rem 0 0;
+  font-size: 0.8125rem;
+  color: #6b7280;
 }
 </style>
