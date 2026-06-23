@@ -54,6 +54,13 @@ async def lifespan(app: FastAPI):
 
     if redis_pool is not None:
         await redis_pool.close()
+    # Close shared httpx clients in the AI gateway key pool.
+    try:
+        from app.gateway import pool as _gateway_pool
+
+        await _gateway_pool.close_all()
+    except Exception as exc:
+        logger.warning("Could not close gateway HTTP clients: %s", exc)
     await close_db()
     await close_driver()
 

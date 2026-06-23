@@ -131,6 +131,16 @@ class KeyPool:
             for k in self.keys
         ]
 
+    async def close_all(self) -> None:
+        """Close shared HTTP clients on all keys to release connections."""
+        for k in self.keys:
+            aclose = getattr(k.provider, "aclose", None)
+            if aclose is not None:
+                try:
+                    await aclose()
+                except Exception as exc:
+                    logger.warning("Error closing provider client: %s", exc)
+
 
 pool = KeyPool()
 

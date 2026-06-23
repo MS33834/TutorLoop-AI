@@ -30,6 +30,10 @@ def extract_frames(
     """Extract JPG frames from a video at fixed intervals.
 
     Returns (list of dicts with timestamp_seconds and frame image, video duration).
+
+    .. note::
+        For memory efficiency prefer :func:`extract_and_save_frames` which writes
+        each frame to disk immediately instead of accumulating them in memory.
     """
     interval = interval_seconds or settings.frame_interval_seconds
     cap = cv2.VideoCapture(video_path)
@@ -63,6 +67,56 @@ def extract_frames(
     return frames, duration
 
 
+def extract_and_save_frames(
+    video_path: str,
+    target_dir: Path,
+    interval_seconds: int | None = None,
+) -> tuple[list[dict], float]:
+    """Extract frames and write each to disk immediately.
+
+    Unlike :func:`extract_frames`, this holds at most one decoded frame in
+    memory at a time, avoiding OOM on long videos. Returns a list of dicts
+    with ``timestamp_seconds`` and ``file_path`` keys, plus the video duration.
+    """
+    interval = interval_seconds or settings.frame_interval_seconds
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        logger.error("Cannot open video: %s", video_path)
+        return [], 0.0
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = total_frames / fps if fps > 0 else 0.0
+
+    frame_interval = max(1, int(fps * interval))
+    saved: list[dict] = []
+    frame_index = 0
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            if frame_index % frame_interval == 0:
+                timestamp_seconds = round(frame_index / fps, 2)
+                filename = f"{int(timestamp_seconds * 1000)}.jpg"
+                file_path = str(target_dir / filename)
+                if cv2.imwrite(file_path, frame):
+                    saved.append(
+                        {"timestamp_seconds": timestamp_seconds, "file_path": file_path}
+                    )
+                else:
+                    logger.warning("Failed to write frame to %s; skipping", file_path)
+
+            frame_index += 1
+    finally:
+        cap.release()
+
+    saved.sort(key=lambda x: x["timestamp_seconds"])
+    return saved, duration
+
+
 async def process_video(
     course_id: str, title: str, source_path: str, video_id: str | None = None
 ) -> tuple[str, list[VideoFrame]]:
@@ -87,16 +141,12 @@ async def process_video(
     _ensure_dir(target_video.parent)
     os.replace(source_path, str(target_video))
 
-    raw_frames, duration = extract_frames(str(target_video))
+    raw_frames, duration = extract_and_save_frames(str(target_video), target_dir)
 
     db_frames = []
     for item in raw_frames:
         timestamp = item["timestamp_seconds"]
-        filename = f"{int(timestamp * 1000)}.jpg"
-        file_path = str(target_dir / filename)
-        if not cv2.imwrite(file_path, item["frame"]):
-            logger.warning("Failed to write frame to %s; skipping", file_path)
-            continue
+        file_path = item["file_path"]
 
         caption = f"Frame at {timestamp}s"
         frame = VideoFrame(

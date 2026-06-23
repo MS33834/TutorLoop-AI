@@ -124,6 +124,25 @@ class OpenAICompatibleProvider(ModelProvider):
     def __init__(self, base_url: str, api_key: str):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        # Lazily-created shared httpx client for connection pooling/keep-alive.
+        self._client: Any = None
+
+    @property
+    def client(self) -> Any:
+        """Return a shared httpx.AsyncClient, creating it on first use."""
+        import httpx
+
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(120.0, connect=10.0),
+                limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the shared HTTP client. Safe to call multiple times."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
 
     def _normalize_messages(
         self, messages: list[dict[str, Any]]
@@ -171,47 +190,46 @@ class OpenAICompatibleProvider(ModelProvider):
 
         payload = self._request_payload(messages, model, temperature, max_tokens, stream=True)
 
-        async with httpx.AsyncClient() as client:
-            try:
-                async with client.stream(
-                    "POST",
-                    f"{self.base_url}/chat/completions",
-                    headers=self._headers(),
-                    json=payload,
-                    timeout=60,
-                ) as response:
-                    if response.status_code >= 400:
-                        text = ""
-                        try:
-                            text = await response.aread()
-                            text = text.decode("utf-8", errors="ignore")
-                        except Exception:
-                            pass
-                        raise _classify_http_error(response.status_code, text)
-                    async for line in response.aiter_lines():
-                        line = line.strip()
-                        if not line.startswith("data: "):
-                            continue
-                        data = line.removeprefix("data: ").strip()
-                        if data == "[DONE]":
-                            break
-                        try:
-                            chunk = __import__("json").loads(data)
-                            delta = (
-                                chunk.get("choices", [{}])[0]
-                                .get("delta", {})
-                                .get("content")
-                            )
-                            if delta:
-                                yield delta
-                        except Exception:
-                            continue
-            except httpx.HTTPStatusError as exc:
-                raise _classify_http_error(exc.response.status_code, str(exc)) from exc
-            except httpx.TimeoutException as exc:
-                raise ProviderError(f"request timeout: {exc}", status_code=504) from exc
-            except httpx.RequestError as exc:
-                raise ProviderError(f"request failed: {exc}", status_code=None) from exc
+        try:
+            async with self.client.stream(
+                "POST",
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                json=payload,
+                timeout=60,
+            ) as response:
+                if response.status_code >= 400:
+                    text = ""
+                    try:
+                        text = await response.aread()
+                        text = text.decode("utf-8", errors="ignore")
+                    except Exception:
+                        pass
+                    raise _classify_http_error(response.status_code, text)
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line.startswith("data: "):
+                        continue
+                    data = line.removeprefix("data: ").strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = __import__("json").loads(data)
+                        delta = (
+                            chunk.get("choices", [{}])[0]
+                            .get("delta", {})
+                            .get("content")
+                        )
+                        if delta:
+                            yield delta
+                    except Exception:
+                        continue
+        except httpx.HTTPStatusError as exc:
+            raise _classify_http_error(exc.response.status_code, str(exc)) from exc
+        except httpx.TimeoutException as exc:
+            raise ProviderError(f"request timeout: {exc}", status_code=504) from exc
+        except httpx.RequestError as exc:
+            raise ProviderError(f"request failed: {exc}", status_code=None) from exc
 
     async def chat_completion(  # type: ignore[override]
         self,
@@ -224,39 +242,35 @@ class OpenAICompatibleProvider(ModelProvider):
 
         payload = self._request_payload(messages, model, temperature, max_tokens, stream=False)
 
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers=self._headers(),
-                    json=payload,
-                    timeout=120,
-                )
-                if response.status_code >= 400:
-                    raise _classify_http_error(response.status_code, response.text)
-                return cast(dict[str, Any], response.json())
-            except httpx.HTTPStatusError as exc:
-                raise _classify_http_error(exc.response.status_code, str(exc)) from exc
-            except httpx.TimeoutException as exc:
-                raise ProviderError(f"request timeout: {exc}", status_code=504) from exc
-            except httpx.RequestError as exc:
-                raise ProviderError(f"request failed: {exc}", status_code=None) from exc
+        try:
+            response = await self.client.post(
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                json=payload,
+                timeout=120,
+            )
+            if response.status_code >= 400:
+                raise _classify_http_error(response.status_code, response.text)
+            return cast(dict[str, Any], response.json())
+        except httpx.HTTPStatusError as exc:
+            raise _classify_http_error(exc.response.status_code, str(exc)) from exc
+        except httpx.TimeoutException as exc:
+            raise ProviderError(f"request timeout: {exc}", status_code=504) from exc
+        except httpx.RequestError as exc:
+            raise ProviderError(f"request failed: {exc}", status_code=None) from exc
 
     async def health_check(self) -> dict[str, Any]:
-        import httpx
-
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{self.base_url}/models",
-                    headers=self._headers(),
-                    timeout=10,
-                )
-                if response.status_code == 200:
-                    return {"status": "healthy"}
-                if response.status_code == 429:
-                    return {"status": "degraded", "reason": "rate limited"}
-                return {"status": "degraded", "reason": f"HTTP {response.status_code}"}
+            response = await self.client.get(
+                f"{self.base_url}/models",
+                headers=self._headers(),
+                timeout=10,
+            )
+            if response.status_code == 200:
+                return {"status": "healthy"}
+            if response.status_code == 429:
+                return {"status": "degraded", "reason": "rate limited"}
+            return {"status": "degraded", "reason": f"HTTP {response.status_code}"}
         except Exception as exc:
             return {"status": "offline", "reason": str(exc)}
 

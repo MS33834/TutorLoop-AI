@@ -1,10 +1,10 @@
 """Bayesian Knowledge Tracing mastery engine."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.orm import selectinload
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
@@ -43,7 +43,12 @@ def _bkt_update(p_l: float, is_correct: bool, p_g: float, p_s: float) -> float:
 
 @_db_retry
 async def initialize_mastery(user_id: str, course_id: str) -> None:
-    """Create initial Mastery records for a user in a course."""
+    """Create initial Mastery records for a user in a course.
+
+    Uses a single bulk INSERT for all missing nodes instead of per-row
+    ``session.add()`` calls, reducing round-trips for courses with many
+    knowledge nodes.
+    """
     async with AsyncSessionLocal() as session:
         # Batch load all node IDs for the course.
         node_result = await session.execute(
@@ -59,19 +64,23 @@ async def initialize_mastery(user_id: str, course_id: str) -> None:
         )
         existing_node_ids = {row[0] for row in existing_result.all()}
 
-        # Create missing records in bulk.
+        # Bulk insert missing records in a single statement.
         missing = all_node_ids - existing_node_ids
-        for node_id in missing:
-            session.add(
-                Mastery(
-                    user_id=user_id,
-                    node_id=node_id,
-                    p_known=settings.bkt_p_l0,
-                    p_t=settings.bkt_p_t,
-                    interactions_count=0,
-                )
+        if missing:
+            await session.execute(
+                insert(Mastery),
+                [
+                    {
+                        "user_id": user_id,
+                        "node_id": node_id,
+                        "p_known": settings.bkt_p_l0,
+                        "p_t": settings.bkt_p_t,
+                        "interactions_count": 0,
+                    }
+                    for node_id in missing
+                ],
             )
-        await session.commit()
+            await session.commit()
 
 
 @_db_retry
@@ -86,7 +95,7 @@ async def update_mastery(user_id: str, node_id: str, is_correct: bool) -> dict:
             mastery.p_known, is_correct, settings.bkt_p_g, settings.bkt_p_s
         )
         mastery.interactions_count += 1
-        mastery.updated_at = datetime.now(timezone.utc)
+        mastery.updated_at = datetime.now(UTC)
         await session.commit()
         await session.refresh(mastery)
 
