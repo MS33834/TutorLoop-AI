@@ -137,7 +137,6 @@ async def generate_class_report(course_id: str) -> dict:
             .where(
                 Interaction.course_id == course_id,
                 Interaction.user_id.isnot(None),
-                Interaction.is_correct.isnot(None),
             )
             .group_by(Interaction.user_id, User.username)
             .order_by(func.max(Interaction.created_at).desc())
