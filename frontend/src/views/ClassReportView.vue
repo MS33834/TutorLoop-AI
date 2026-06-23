@@ -197,7 +197,7 @@ const activityChartOptions = {
             </tbody>
           </table>
         </div>
-        <p v-else class="empty">暂无学生参与数据。</p>
+        <p v-else class="empty">还没有学生参与记录，分享房间号邀请学生开始学习吧。</p>
 
         <div v-if="report.pagination?.total > pageSize" class="pagination">
           <button

@@ -129,9 +129,9 @@ async def chat(
     current_user: User | None = Depends(get_optional_current_user),
 ):
     if not body.messages:
-        raise HTTPException(status_code=422, detail="messages cannot be empty")
+        raise HTTPException(status_code=422, detail="消息内容不能为空")
     if len(body.messages) > 50:
-        raise HTTPException(status_code=422, detail="too many messages")
+        raise HTTPException(status_code=422, detail="消息数量超出限制")
 
     # Anonymous users must provide a room slug pointing to an anonymous-enabled room.
     if current_user is None:

@@ -15,8 +15,8 @@ const personas = [
   {
     key: 'student',
     label: '学生',
-    title: '你的 24/7 AI 学习伙伴',
-    subtitle: '看视频卡住？随时截图提问，TutorLoop AI 用苏格拉底式提问引导你独立思考，真正搞懂每一个知识点。',
+    title: '随时陪你搞懂每个知识点',
+    subtitle: '看视频卡住？随时截图提问，TutorLoop 用引导式提问陪你独立思考，真正搞懂每一个知识点。',
     primaryAction: '进入体验房间',
     primaryRoute: null,
     secondaryAction: '浏览课程',
@@ -25,8 +25,8 @@ const personas = [
   {
     key: 'tutor',
     label: '老师',
-    title: '让 AI 成为你的超级助教',
-    subtitle: '上传课程视频，AI 自动抽帧、构建知识图谱、追踪学生掌握度，帮你规模化地提供个性化辅导。',
+    title: '让辅导规模化，把时间还给学生',
+    subtitle: '上传课程视频，上传视频后自动抽帧、构建知识图谱、追踪掌握度，帮你规模化地提供个性化辅导。',
     primaryAction: '上传课程',
     primaryRoute: '/upload',
     secondaryAction: '查看示例报告',
@@ -110,19 +110,19 @@ function onPersonaKeydown(e, index) {
 const stats = [
   { value: '10,000+', label: '学习者' },
   { value: '50+', label: '知识节点' },
-  { value: '<2s', label: 'AI 平均响应' },
+  { value: '<2s', label: '辅导响应' },
   { value: '24/7', label: '随时辅导' }
 ]
 
 const features = [
   {
-    title: 'AI 苏格拉底式辅导',
+    title: '苏格拉底式引导辅导',
     desc: '不直接给答案，通过引导式提问帮你建立深度理解，培养可迁移的解题思维。',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>'
   },
   {
     title: '视频时间轴学习',
-    desc: '任意时刻截图/提问，AI 自动关联视频帧与知识点，回放学习不再迷失重点。',
+    desc: '任意时刻截图/提问，自动关联视频帧与知识点，回放学习不再迷失重点。',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.18"></rect><line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line><line x1="2" y1="7" x2="7" y2="7"></line><line x1="2" y1="17" x2="7" y2="17"></line><line x1="17" y1="17" x2="22" y2="17"></line><line x1="17" y1="7" x2="22" y2="7"></line></svg>'
   },
   {
@@ -137,7 +137,7 @@ const features = [
   },
   {
     title: '多模态交互',
-    desc: '支持文字、截图、时间戳多种提问方式，AI 能"看懂"视频画面并给出情境化解答。',
+    desc: '支持文字、截图、时间戳多种提问方式，系统能结合视频画面给出情境化解答。',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>'
   },
   {
@@ -150,12 +150,12 @@ const features = [
 const steps = [
   {
     title: '上传课程视频',
-    desc: '老师上传视频后，AI 自动抽帧、解析画面并抽取知识点，生成可交互课程。',
+    desc: '老师上传视频后，自动抽帧、解析画面并抽取知识点，生成可交互课程。',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>'
   },
   {
     title: '进入学习房间',
-    desc: '边看视频边提问，AI 用苏格拉底式对话引导你思考，像私教一样陪伴左右。',
+    desc: '边看视频边提问，用苏格拉底式对话引导你思考，像私教一样陪伴左右。',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>'
   },
   {
@@ -177,11 +177,11 @@ const subjects = [
 const tips = [
   {
     title: '先尝试再求助',
-    desc: '遇到难题先写下自己的思路，哪怕只写出一半，AI 也能据此精准定位你的卡点。'
+    desc: '遇到难题先写下自己的思路，哪怕只写出一半，系统也能据此精准定位你的卡点。'
   },
   {
     title: '善用截图提问',
-    desc: '在视频或作业界面截图，AI 能结合视觉上下文给出更具体、更连贯的讲解。'
+    desc: '在视频或作业界面截图，系统能结合视觉上下文给出更具体、更连贯的讲解。'
   },
   {
     title: '回看知识图谱',
@@ -195,7 +195,7 @@ const tips = [
 
 const testimonials = [
   {
-    quote: '以前看视频总卡住，现在随时截图问 AI，就像在跟助教对话，理解得比以前深多了。',
+    quote: '以前看视频总卡住，现在随时截图提问，就像在跟助教对话，理解得比以前深多了。',
     author: '张同学',
     role: '大一计算机专业'
   },
@@ -218,8 +218,8 @@ const testimonials = [
 
 const faqs = [
   {
-    q: 'TutorLoop AI 适合哪些学习场景？',
-    a: '适合需要深度理解的视频课程学习，如数学、物理、编程、语言等。AI 会根据视频画面和知识点进行引导，也适合老师快速构建数字化课程。'
+    q: 'TutorLoop 适合哪些学习场景？',
+    a: '适合需要深度理解的视频课程学习，如数学、物理、编程、语言等。系统会根据视频画面和知识点进行引导，也适合老师快速构建数字化课程。'
   },
   {
     q: '截图提问会被保存吗？',
@@ -239,7 +239,7 @@ const faqs = [
   },
   {
     q: '支持哪些大语言模型？',
-    a: '后端采用插件化模型 Provider 架构，可接入 OpenAI 兼容接口、本地模型等多种 LLM/VLM。'
+    a: '后端采用插件化模型 Provider 架构，支持接入多种主流大模型，可灵活替换。'
   }
 ]
 
@@ -352,9 +352,9 @@ function goToDashboard() {
           </button>
         </div>
       </div>
-      <div class="hero-visual" role="img" aria-label="AI、视频、知识图谱与掌握度追踪围绕学习者旋转的可视化">
+      <div class="hero-visual" role="img" aria-label="视频、知识图谱与掌握度追踪围绕学习者旋转的可视化">
         <div class="orbit">
-          <span class="orbit-item">AI</span>
+          <span class="orbit-item">辅导</span>
           <span class="orbit-item">Video</span>
           <span class="orbit-item">Graph</span>
           <span class="orbit-item">BKT</span>
@@ -381,7 +381,7 @@ function goToDashboard() {
     </section>
 
     <section class="steps" aria-labelledby="steps-title">
-      <h2 id="steps-title" class="section-title">三步开启智能学习</h2>
+      <h2 id="steps-title" class="section-title">三步开启高效学习</h2>
       <div class="step-grid" role="list">
         <div v-for="(step, idx) in steps" :key="step.title" class="step-card" role="listitem">
           <div class="step-number" :aria-label="'第 ' + (idx + 1) + ' 步'">{{ idx + 1 }}</div>
@@ -471,14 +471,14 @@ function goToDashboard() {
       </div>
 
       <div v-if="!loading && !courses.length && !error" class="empty">
-        暂无课程，老师可以先去上传。
+        还没有课程，老师上传第一个视频即可开启学习闭环。
       </div>
     </section>
 
     <section class="cta" aria-labelledby="cta-title">
       <div class="cta-card">
-        <h2 id="cta-title" class="cta-title">准备好打造你的 AI 课程了吗？</h2>
-        <p class="cta-desc">上传视频，3 分钟即可让 AI 为学生提供 24/7 个性化辅导。</p>
+        <h2 id="cta-title" class="cta-title">准备好打造你的互动课程了吗？</h2>
+        <p class="cta-desc">上传视频，3 分钟即可为学生提供 24/7 个性化辅导。</p>
         <button
           class="hero-btn primary"
           type="button"

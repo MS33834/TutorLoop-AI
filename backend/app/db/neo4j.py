@@ -40,58 +40,61 @@ async def create_nodes_and_edges(
     node_ids = []
     rel_ids = []
 
-    async with driver.session() as session:
-        # Create nodes
-        for node in nodes:
-            node_id = node.get("id")
-            name = node.get("name", "")
-            description = node.get("description", "")
-            threshold = node.get("threshold", 0.8)
+    node_batch = [
+        {
+            "id": node.get("id"),
+            "name": node.get("name", ""),
+            "description": node.get("description", ""),
+            "threshold": node.get("threshold", 0.8),
+        }
+        for node in nodes
+    ]
+    edge_batch = [
+        {
+            "from": edge.get("from"),
+            "to": edge.get("to"),
+            "relation": edge.get("relation", "prerequisite"),
+        }
+        for edge in edges
+        if edge.get("from") and edge.get("to")
+    ]
 
-            result = await session.run(
+    async with driver.session() as session:
+        # Create nodes in bulk via UNWIND.
+        if node_batch:
+            node_result = await session.run(
                 """
-                MERGE (n:KnowledgeNode {course_id: $course_id, node_id: $node_id})
-                SET n.name = $name,
-                    n.description = $description,
-                    n.threshold = $threshold
+                UNWIND $nodes AS node
+                MERGE (n:KnowledgeNode {course_id: $course_id, node_id: node.id})
+                SET n.name = node.name,
+                    n.description = node.description,
+                    n.threshold = node.threshold
                 RETURN elementId(n) AS eid
                 """,
                 course_id=course_id,
-                node_id=node_id,
-                name=name,
-                description=description,
-                threshold=threshold,
+                nodes=node_batch,
             )
-            record = await result.single()
-            if record:
+            async for record in node_result:
                 node_ids.append(record["eid"])
-            await result.consume()
+            await node_result.consume()
 
-        # Create edges
-        for edge in edges:
-            from_id = edge.get("from")
-            to_id = edge.get("to")
-            relation = edge.get("relation", "prerequisite")
-            if not from_id or not to_id:
-                continue
-
-            result = await session.run(
+        # Create edges in bulk via UNWIND.
+        if edge_batch:
+            edge_result = await session.run(
                 """
-                MATCH (a:KnowledgeNode {course_id: $course_id, node_id: $from_id})
-                MATCH (b:KnowledgeNode {course_id: $course_id, node_id: $to_id})
+                UNWIND $edges AS edge
+                MATCH (a:KnowledgeNode {course_id: $course_id, node_id: edge.from})
+                MATCH (b:KnowledgeNode {course_id: $course_id, node_id: edge.to})
                 MERGE (a)-[r:PREREQUISITE]->(b)
-                SET r.relation = $relation
+                SET r.relation = edge.relation
                 RETURN elementId(r) AS eid
                 """,
                 course_id=course_id,
-                from_id=from_id,
-                to_id=to_id,
-                relation=relation,
+                edges=edge_batch,
             )
-            record = await result.single()
-            if record:
+            async for record in edge_result:
                 rel_ids.append(record["eid"])
-            await result.consume()
+            await edge_result.consume()
 
     return node_ids, rel_ids
 

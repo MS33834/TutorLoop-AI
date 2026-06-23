@@ -1,6 +1,6 @@
 import { useUserStore } from '../stores/user.js'
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+export const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 const DEFAULT_TIMEOUT_MS = 30000
 
 function buildUrl(path) {
@@ -63,7 +63,7 @@ export async function apiFetch(path, options = {}) {
 
     if (!response.ok) {
       const body = await response.text().catch(() => '')
-      const err = new Error(`请求失败：${response.status} ${body}`)
+      const err = new Error('请求没能成功，请稍后重试')
       err.status = response.status
       err.code = `HTTP_${response.status}`
       throw err
@@ -74,14 +74,14 @@ export async function apiFetch(path, options = {}) {
     if (timeoutId) clearTimeout(timeoutId)
 
     if (err.name === 'AbortError') {
-      const aborted = new Error(timeoutMs > 0 ? '请求超时，请稍后重试' : '请求已取消')
+      const aborted = new Error(timeoutMs > 0 ? '请求超时了，再试一次看看' : '请求已取消')
       aborted.code = 'ABORTED'
       aborted.isAbort = true
       throw aborted
     }
 
     if (err.name === 'TypeError' || err.message?.includes('fetch')) {
-      const networkErr = new Error('网络异常，请检查网络连接')
+      const networkErr = new Error('网络好像断开了，请检查后重试')
       networkErr.code = 'NETWORK_ERROR'
       networkErr.original = err
       throw networkErr

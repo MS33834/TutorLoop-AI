@@ -50,7 +50,7 @@ function toggleMode() {
   <div class="login">
     <form class="card" @submit.prevent="submit">
       <h1 class="title">{{ mode === 'login' ? '登录' : '注册' }}</h1>
-      <p class="subtitle">TutorLoop AI</p>
+      <p class="subtitle">欢迎回来，继续你的学习闭环</p>
 
       <label class="field">
         <span>用户名</span>

@@ -107,6 +107,7 @@ class RoomResponse(BaseModel):
 
 
 class RoomPublicResponse(BaseModel):
+    id: str
     slug: str
     course_id: str
     title: Optional[str]
@@ -195,6 +196,7 @@ class InteractionResponse(BaseModel):
     watch_seconds: Optional[float]
     node_id: Optional[str]
     created_at: str
+    mastery_updated: bool = False
 
 
 class MasteryItem(BaseModel):

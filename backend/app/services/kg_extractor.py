@@ -1,4 +1,4 @@
-"""Knowledge graph extraction agent."""
+"""Knowledge graph extraction service."""
 
 import base64
 import json

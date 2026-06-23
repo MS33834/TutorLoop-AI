@@ -85,6 +85,7 @@ def test_serialize_room_maps_fields():
 
 def test_serialize_public_room_omits_private_fields():
     room = SimpleNamespace(
+        id="room-id",
         slug="abc123",
         course_id="course-id",
         title="Test Room",
@@ -94,6 +95,7 @@ def test_serialize_public_room_omits_private_fields():
         expires_at=None,
     )
     data = _serialize_public_room(room)
+    assert data.id == "room-id"
     assert data.slug == "abc123"
     assert data.require_password is True
     assert "password_hash" not in data.model_dump()

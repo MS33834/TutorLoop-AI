@@ -8,7 +8,7 @@ const router = useRouter()
   <div class="not-found">
     <div class="card">
       <h1 class="title">404</h1>
-      <p class="desc">页面不存在或已被移除</p>
+      <p class="desc">这个页面好像走丢了，回首页继续学习吧</p>
       <button class="btn" type="button" @click="router.push('/')">返回首页</button>
     </div>
   </div>

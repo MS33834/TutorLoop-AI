@@ -45,24 +45,32 @@ def _bkt_update(p_l: float, is_correct: bool, p_g: float, p_s: float) -> float:
 async def initialize_mastery(user_id: str, course_id: str) -> None:
     """Create initial Mastery records for a user in a course."""
     async with AsyncSessionLocal() as session:
+        # Batch load all node IDs for the course.
         node_result = await session.execute(
-            select(KnowledgeNode).where(KnowledgeNode.course_id == course_id)
+            select(KnowledgeNode.id).where(KnowledgeNode.course_id == course_id)
         )
-        nodes = node_result.scalars().all()
+        all_node_ids = {row[0] for row in node_result.all()}
+        if not all_node_ids:
+            return
 
-        for node in nodes:
-            existing = await session.get(Mastery, {"user_id": user_id, "node_id": node.id})
-            if existing is None:
-                session.add(
-                    Mastery(
-                        user_id=user_id,
-                        node_id=node.id,
-                        p_known=settings.bkt_p_l0,
-                        p_t=settings.bkt_p_t,
-                        interactions_count=0,
-                    )
+        # Batch load existing mastery records for this user.
+        existing_result = await session.execute(
+            select(Mastery.node_id).where(Mastery.user_id == user_id)
+        )
+        existing_node_ids = {row[0] for row in existing_result.all()}
+
+        # Create missing records in bulk.
+        missing = all_node_ids - existing_node_ids
+        for node_id in missing:
+            session.add(
+                Mastery(
+                    user_id=user_id,
+                    node_id=node_id,
+                    p_known=settings.bkt_p_l0,
+                    p_t=settings.bkt_p_t,
+                    interactions_count=0,
                 )
-
+            )
         await session.commit()
 
 
@@ -72,7 +80,7 @@ async def update_mastery(user_id: str, node_id: str, is_correct: bool) -> dict:
     async with AsyncSessionLocal() as session:
         mastery = await session.get(Mastery, {"user_id": user_id, "node_id": node_id})
         if mastery is None:
-            raise HTTPException(status_code=404, detail="Mastery record not found")
+            raise HTTPException(status_code=404, detail="未找到掌握度记录")
 
         mastery.p_known = _bkt_update(
             mastery.p_known, is_correct, settings.bkt_p_g, settings.bkt_p_s
@@ -96,21 +104,6 @@ async def update_mastery(user_id: str, node_id: str, is_correct: bool) -> dict:
 async def get_mastery(user_id: str, course_id: str) -> list[dict]:
     """Return mastery records for a user in a course, joined with node info."""
     async with AsyncSessionLocal() as session:
-        has_records_result = await session.execute(
-            select(Mastery)
-            .join(KnowledgeNode)
-            .where(
-                Mastery.user_id == user_id,
-                KnowledgeNode.course_id == course_id,
-            )
-            .limit(1)
-        )
-        has_records = has_records_result.scalar_one_or_none() is not None
-
-    if not has_records:
-        await initialize_mastery(user_id, course_id)
-
-    async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(Mastery)
             .options(selectinload(Mastery.node))
@@ -122,6 +115,20 @@ async def get_mastery(user_id: str, course_id: str) -> list[dict]:
             .order_by(KnowledgeNode.created_at)
         )
         records = result.scalars().all()
+
+        if not records:
+            await initialize_mastery(user_id, course_id)
+            result = await session.execute(
+                select(Mastery)
+                .options(selectinload(Mastery.node))
+                .join(KnowledgeNode)
+                .where(
+                    Mastery.user_id == user_id,
+                    KnowledgeNode.course_id == course_id,
+                )
+                .order_by(KnowledgeNode.created_at)
+            )
+            records = result.scalars().all()
 
         return [
             {

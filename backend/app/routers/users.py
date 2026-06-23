@@ -54,7 +54,7 @@ async def create_interaction(
 ):
     if not body.course_id:
         raise HTTPException(
-            status_code=422, detail="course_id is required"
+            status_code=422, detail="缺少课程 ID"
         )
 
     effective_user_id = current_user.id if current_user else None
@@ -85,6 +85,7 @@ async def create_interaction(
     )
 
     # Only update mastery for authenticated users.
+    mastery_updated = False
     if (
         effective_user_id is not None
         and body.node_id is not None
@@ -96,12 +97,14 @@ async def create_interaction(
                 node_id=body.node_id,
                 is_correct=body.is_correct,
             )
+            mastery_updated = True
         except HTTPException:
             raise
         except Exception as exc:
-            logger.warning("Mastery update failed: %s", exc)
+            logger.error("Mastery update failed for user=%s node=%s: %s", effective_user_id, body.node_id, exc)
 
-    return InteractionResponse(**interaction)
+    result = InteractionResponse(**interaction, mastery_updated=mastery_updated)
+    return result
 
 
 @router.get("/api/users/me/mastery", response_model=list[MasteryItem])
@@ -110,7 +113,7 @@ async def get_my_mastery(
     current_user: User = Depends(get_current_active_user),
 ):
     if not course_id:
-        raise HTTPException(status_code=422, detail="course_id is required")
+        raise HTTPException(status_code=422, detail="缺少课程 ID")
 
     return await bkt_engine.get_mastery(current_user.id, course_id)
 
@@ -121,7 +124,7 @@ async def recommend_for_me(
     current_user: User = Depends(get_current_active_user),
 ):
     if not course_id:
-        raise HTTPException(status_code=422, detail="course_id is required")
+        raise HTTPException(status_code=422, detail="缺少课程 ID")
 
     try:
         rec = await recommendation.recommend_next(current_user.id, course_id)
@@ -135,7 +138,7 @@ async def recommend_for_me(
     if rec is None:
         return RecommendationResponse(
             recommendation=None,
-            message="当前没有合适的推荐节点（可能已全部掌握或前置条件未满足）。",
+            message="暂时没有合适的下一步推荐，可能你已全部掌握，或还有先修知识需要巩固。",
         )
 
     return RecommendationResponse(recommendation=rec)
@@ -147,7 +150,7 @@ async def report_for_me(
     current_user: User = Depends(get_current_active_user),
 ):
     if not course_id:
-        raise HTTPException(status_code=422, detail="course_id is required")
+        raise HTTPException(status_code=422, detail="缺少课程 ID")
 
     try:
         return await report_service.generate_report(current_user.id, course_id)

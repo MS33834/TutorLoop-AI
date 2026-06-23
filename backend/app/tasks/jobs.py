@@ -5,7 +5,7 @@ import os
 
 from app.db.postgres import AsyncSessionLocal
 from app.models.db import Video
-from app.services.kg_agent import extract_knowledge_graph
+from app.services.kg_extractor import extract_knowledge_graph
 from app.services.video_service import process_video
 
 logger = logging.getLogger(__name__)

@@ -244,7 +244,7 @@ async def chat_completion(
     messages: list[dict[str, Any]],
     model_type: str = "text",
 ) -> dict[str, Any]:
-    """Non-streaming chat completion; used by VLM/KG agents.
+    """Non-streaming chat completion; used by VLM/KG services.
 
     Tries each healthy cloud key in turn, then falls back to the local model.
     """

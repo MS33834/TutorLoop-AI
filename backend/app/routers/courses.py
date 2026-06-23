@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from app.config import settings
 from app.db.neo4j import get_graph
 from app.db.postgres import AsyncSessionLocal
 from app.limiter import limiter
@@ -24,7 +25,7 @@ from app.schemas import (
 from app.services.auth_service import get_current_active_user
 from app.services.class_report_service import generate_class_report
 from app.services.embedding_service import encode_text
-from app.services.kg_agent import extract_knowledge_graph
+from app.services.kg_extractor import extract_knowledge_graph
 from app.services.video_service import process_video
 from app.tasks.jobs import process_video_task
 
@@ -63,7 +64,7 @@ def _validate_video_upload(file: UploadFile) -> str:
 def _validate_video_magic(first_bytes: bytes, ext: str) -> None:
     """Validate that the first bytes of the file look like the declared video format."""
     if len(first_bytes) < 12:
-        raise HTTPException(status_code=415, detail="File too small to be a valid video")
+        raise HTTPException(status_code=415, detail="视频文件过小，可能不是有效视频")
 
     if ext in {".mp4", ".mov"}:
         valid = first_bytes[4:8] in {b"ftyp", b"moov", b"mdat"}
@@ -77,7 +78,7 @@ def _validate_video_magic(first_bytes: bytes, ext: str) -> None:
     if not valid:
         raise HTTPException(
             status_code=415,
-            detail="File signature does not match declared video format",
+            detail="文件格式与声明不符，请上传正确的视频文件",
         )
 
 
@@ -91,6 +92,20 @@ def _serialize_user(user: User | None) -> UserResponse | None:
         role=user.role,
         created_at=user.created_at.isoformat(),
     )
+
+
+def _build_video_url(file_path: str) -> str:
+    """Build a servable URL for a video file stored under the upload directory."""
+    if not file_path:
+        return ""
+    upload_dir = settings.upload_dir.rstrip("/")
+    abs_path = os.path.abspath(file_path)
+    abs_upload = os.path.abspath(upload_dir)
+    if abs_path.startswith(abs_upload):
+        rel = os.path.relpath(abs_path, abs_upload)
+        return f"/uploads/{rel.replace(os.sep, '/')}"
+    # Fallback: file not yet moved to uploads (still processing).
+    return ""
 
 
 class CourseCreate(BaseModel):
@@ -146,9 +161,11 @@ async def create_course(
 
 
 @router.get("/api/courses")
-async def list_courses():
+async def list_courses(skip: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100)):
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(Course).order_by(Course.created_at.desc()))
+        result = await session.execute(
+            select(Course).order_by(Course.created_at.desc()).offset(skip).limit(limit)
+        )
         courses = result.scalars().all()
 
     return [
@@ -169,7 +186,7 @@ async def get_course(course_id: str):
         course_result = await session.execute(select(Course).where(Course.id == course_id))
         course = course_result.scalar_one_or_none()
         if course is None:
-            raise HTTPException(status_code=404, detail="Course not found")
+            raise HTTPException(status_code=404, detail="课程不存在")
 
         video_result = await session.execute(
             select(Video).where(Video.course_id == course_id).order_by(Video.created_at)
@@ -186,7 +203,7 @@ async def get_course(course_id: str):
             {
                 "id": v.id,
                 "title": v.title,
-                "video_url": f"/{v.file_path}",
+                "video_url": _build_video_url(v.file_path),
                 "duration_seconds": v.duration_seconds,
                 "status": v.status,
             }
@@ -200,7 +217,7 @@ async def _require_course_owner(course_id: str, current_user: User) -> Course:
         result = await session.execute(select(Course).where(Course.id == course_id))
         course = result.scalar_one_or_none()
         if course is None:
-            raise HTTPException(status_code=404, detail="Course not found")
+            raise HTTPException(status_code=404, detail="课程不存在")
         if course.created_by != current_user.id and current_user.role != "admin":
             raise HTTPException(status_code=403, detail="没有权限操作该课程")
         return course
@@ -236,7 +253,7 @@ async def upload_video(
         with open(temp_path, "wb") as f:
             first_chunk = await file.read(8192)
             if not first_chunk:
-                raise HTTPException(status_code=400, detail="Empty upload file")
+                raise HTTPException(status_code=400, detail="上传文件为空")
             _validate_video_magic(first_chunk, ext)
             total_size = len(first_chunk)
             f.write(first_chunk)
@@ -247,7 +264,7 @@ async def upload_video(
                     break
                 total_size += len(chunk)
                 if total_size > MAX_VIDEO_SIZE_BYTES:
-                    raise HTTPException(status_code=413, detail="Video file too large")
+                    raise HTTPException(status_code=413, detail="视频文件过大")
                 f.write(chunk)
     except HTTPException:
         _safe_remove(temp_path)
@@ -317,14 +334,14 @@ async def build_graph(
             )
             first_video = video_result.scalar_one_or_none()
             if first_video is None:
-                raise HTTPException(status_code=404, detail="No video in course")
+                raise HTTPException(status_code=404, detail="该课程暂无视频")
             video_id = first_video.id
         else:
             video_result = await session.execute(
                 select(Video).where(Video.id == video_id, Video.course_id == course_id)
             )
             if video_result.scalar_one_or_none() is None:
-                raise HTTPException(status_code=404, detail="Video not found in course")
+                raise HTTPException(status_code=404, detail="课程中未找到该视频")
 
     graph = await extract_knowledge_graph(course_id, video_id, body.transcript)
     return graph

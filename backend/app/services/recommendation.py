@@ -237,7 +237,7 @@ async def recommend_next(user_id: str, course_id: str) -> dict | None:
             "video_id": frame["video_id"] if frame else None,
             "timestamp_seconds": frame["timestamp_seconds"] if frame else None,
             "reason": (
-                "该知识点掌握度最低，建议优先学习（图谱不可用，采用简单兜底策略）。"
+                "这个知识点掌握得最不牢固，建议优先攻克。"
             ),
         }
 
@@ -289,5 +289,5 @@ async def recommend_next(user_id: str, course_id: str) -> dict | None:
         },
         "video_id": frame["video_id"] if frame else None,
         "timestamp_seconds": frame["timestamp_seconds"] if frame else None,
-        "reason": "该知识点未掌握且前置条件已满足，建议优先学习。",
+        "reason": "这个知识点还没掌握，且先修内容已学完，正是攻克它的好时机。",
     }

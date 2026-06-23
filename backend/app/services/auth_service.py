@@ -42,13 +42,13 @@ def _decode_token(token: str) -> dict:
     except jwt.ExpiredSignatureError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token 已过期",
+            detail="登录已过期，请重新登录",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
     except jwt.InvalidTokenError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token 无效",
+            detail="登录凭据无效，请重新登录",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
     return payload
@@ -69,7 +69,7 @@ async def get_current_user(
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token 内容无效",
+            detail="登录信息异常，请重新登录",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

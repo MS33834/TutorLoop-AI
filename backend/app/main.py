@@ -72,7 +72,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="TutorLoop-AI Gateway",
+    title="TutorLoop Gateway",
     version="0.0.0",
     lifespan=lifespan,
 )
@@ -116,7 +116,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled exception: %s", exc)
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error"},
+        content={"detail": "服务暂时开小差了，请稍后重试"},
     )
 
 

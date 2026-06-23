@@ -21,9 +21,9 @@ function logout() {
   <a href="#main-content" class="skip-link">跳转到主要内容</a>
   <div class="app">
     <header class="header">
-      <RouterLink to="/" class="brand" aria-label="TutorLoop AI 首页">
+      <RouterLink to="/" class="brand" aria-label="TutorLoop 首页">
         <span class="brand-logo" aria-hidden="true">TL</span>
-        <span class="brand-name">TutorLoop AI</span>
+        <span class="brand-name">TutorLoop</span>
       </RouterLink>
       <nav class="nav" aria-label="主导航">
         <RouterLink to="/" class="nav-link">首页</RouterLink>
@@ -34,7 +34,7 @@ function logout() {
           target="_blank"
           rel="noopener noreferrer"
           class="nav-link"
-          aria-label="在 GitHub 上查看 TutorLoop AI 源码（新标签页打开）"
+          aria-label="在 GitHub 上查看 TutorLoop 源码（新标签页打开）"
         >GitHub</a>
         <template v-if="userStore.isLoggedIn">
           <span class="nav-user" aria-label="当前登录用户">{{ userStore.user?.username }}</span>
@@ -49,7 +49,7 @@ function logout() {
       </ErrorBoundary>
     </main>
     <footer class="footer">
-      <p>TutorLoop AI · 多模态自适应学习伙伴</p>
+      <p>TutorLoop · 让每一次学习都形成闭环</p>
     </footer>
   </div>
 </template>

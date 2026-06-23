@@ -9,7 +9,8 @@ import {
 } from 'vue'
 import { useChatStore } from '../stores/chat.js'
 import { useUserStore } from '../stores/user.js'
-import { apiFetch } from '../api/client.js'
+import { apiFetch, API_BASE } from '../api/client.js'
+import { useRouter } from 'vue-router'
 import { getRoomBySlug, joinRoom } from '../api/rooms.js'
 import VideoPlayer from '../components/VideoPlayer.vue'
 import MasteryRadar from '../components/MasteryRadar.vue'
@@ -19,10 +20,9 @@ const props = defineProps({
   slug: { type: String, required: true }
 })
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
-
 const chat = useChatStore()
 const user = useUserStore()
+const router = useRouter()
 
 const room = ref(null)
 const course = ref(null)
@@ -325,7 +325,7 @@ async function sendFeedback(isCorrect) {
     await loadMastery()
     await loadRecommendation()
   } catch (err) {
-    error.value = err.message || '反馈提交失败，请重试'
+    error.value = err.message || '反馈没能记录下来，不影响你继续学习'
   } finally {
     feedbackLoading.value = false
   }
@@ -381,6 +381,12 @@ async function send() {
       body: JSON.stringify(body)
     })
 
+    if (response.status === 401) {
+      user.clearAuth()
+      router.push('/login')
+      throw new Error('登录已过期，请重新登录')
+    }
+
     if (!response.ok) {
       throw new Error(`请求失败：${response.status}`)
     }
@@ -415,7 +421,7 @@ async function send() {
             chat.appendAssistantToken(data.content)
             await scrollToBottom()
           } else if (data.type === 'error') {
-            handleError(data.message || 'AI 返回错误')
+            handleError(data.message || '辅导回复出错，请重试')
           }
         } catch {
           // ignore malformed SSE lines
@@ -425,7 +431,7 @@ async function send() {
   } catch (err) {
     if (err.name === 'AbortError') {
       // 用户主动取消或组件卸载，静默处理
-      chat.updateLastAssistantContent('（已取消）')
+      chat.updateLastAssistantContent('（已停止生成）')
     } else {
       handleError(err.message || '网络错误，请稍后重试')
     }
@@ -447,7 +453,7 @@ function onKeydown(e) {
 
 <template>
   <div class="room">
-    <div v-if="pageLoading" class="page-status">加载中…</div>
+    <div v-if="pageLoading" class="page-status">正在准备学习房间…</div>
     <div v-else-if="error && !currentVideo" class="page-status error">{{ error }}</div>
 
     <div v-else-if="requirePassword" class="password-gate">
@@ -482,8 +488,8 @@ function onKeydown(e) {
             @timeupdate="onTimeUpdate"
           />
           <div v-else class="video-placeholder">
-            <p>暂无视频</p>
-            <p class="sub">请老师先在“上传”页面添加课程视频。</p>
+            <p>课程视频还在准备中</p>
+            <p class="sub">老师上传后即可开始学习。</p>
           </div>
         </div>
 
@@ -523,7 +529,7 @@ function onKeydown(e) {
           >
             <div class="bubble">
               <p v-if="message.content" class="text">{{ message.content }}</p>
-              <p v-else class="text placeholder">AI 思考中…</p>
+              <p v-else class="text placeholder">正在为你梳理思路…</p>
             </div>
           </div>
 
@@ -574,7 +580,7 @@ function onKeydown(e) {
               :disabled="!selectedNodeId || feedbackLoading"
               @click="confirmNodeForFeedback"
             >
-              确认
+              提交反馈
             </button>
           </div>
         </div>
@@ -584,7 +590,7 @@ function onKeydown(e) {
             v-model="input"
             class="input"
             rows="1"
-            placeholder="输入问题，AI 将以苏格拉底方式引导你…"
+            placeholder="说说你卡在哪里，我们一起理清思路…"
             @keydown="onKeydown"
           />
           <button
@@ -593,7 +599,7 @@ function onKeydown(e) {
             :disabled="(!input.trim() && !screenshot) || loading"
             @click="send"
           >
-            {{ loading ? '…' : '发送' }}
+            {{ loading ? '…' : '提问' }}
           </button>
         </div>
       </div>

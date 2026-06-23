@@ -45,7 +45,7 @@ async function submit() {
 
     let videoId = null
     if (videoFile.value) {
-      setStatus('正在上传视频…')
+      setStatus('正在上传视频，请稍候…')
       const formData = new FormData()
       formData.append('file', videoFile.value)
       const uploadResult = await apiFetch(`/api/courses/${courseId}/videos`, {
@@ -55,18 +55,18 @@ async function submit() {
       videoId = uploadResult.video_id || null
     }
 
-    setStatus('正在构建知识图谱…')
+    setStatus('正在分析视频并构建知识图谱…')
     await apiFetch(`/api/courses/${courseId}/build-graph`, {
       method: 'POST',
       body: JSON.stringify({ video_id: videoId })
     })
 
-    setStatus('完成！即将跳转首页…')
+    setStatus('课程创建完成，即将返回首页…')
     setTimeout(() => {
       router.push('/')
     }, 1200)
   } catch (err) {
-    error.value = err.message || '上传失败，请重试'
+    error.value = err.message || '上传没能完成，请检查视频后重试'
     status.value = ''
   } finally {
     loading.value = false
@@ -96,7 +96,7 @@ async function submit() {
       </label>
 
       <button class="submit-btn" type="submit" :disabled="loading">
-        {{ loading ? '处理中…' : '创建课程并构建图谱' }}
+        {{ loading ? '正在创建…' : '创建课程并构建图谱' }}
       </button>
 
       <div v-if="status" class="message status-msg">{{ status }}</div>

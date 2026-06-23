@@ -46,7 +46,7 @@ async function loadReport() {
     )
     report.value = data
   } catch (err) {
-    error.value = err.message || '报告加载失败'
+    error.value = err.message || '报告暂时无法加载，稍后再来看看'
     report.value = null
   } finally {
     loading.value = false
@@ -113,7 +113,7 @@ const nextActions = computed(() => {
   }
   actions.push({
     icon: '💬',
-    text: '针对薄弱知识点多次提问与反馈，帮助 AI 更精准地调整推荐。'
+    text: '针对薄弱知识点多次提问与反馈，帮助系统更精准地调整推荐。'
   })
   return actions.slice(0, 4)
 })

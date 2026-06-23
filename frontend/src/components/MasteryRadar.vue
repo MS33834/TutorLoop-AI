@@ -139,11 +139,11 @@ const chartOptions = computed(() => ({
     <h3 class="title">掌握度雷达</h3>
 
     <div v-if="!displayItems.length" class="fallback">
-      <p>暂无掌握度数据</p>
+      <p>还没有掌握度数据，多提问几次就能看到你的进步曲线</p>
     </div>
 
     <div v-else-if="chartError" class="fallback-list">
-      <p class="fallback-hint">图表渲染失败，已切换为文本列表</p>
+      <p class="fallback-hint">图表暂时无法显示，已为你切换为文字列表</p>
       <ul>
         <li v-for="item in displayItems" :key="item._key">
           <span class="name">{{ item.name }}</span>

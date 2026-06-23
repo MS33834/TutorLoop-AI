@@ -297,7 +297,7 @@ async function removeEdge() {
       </div>
     </div>
 
-    <div v-if="loading" class="status">加载中…</div>
+    <div v-if="loading" class="status">正在展开知识图谱…</div>
     <div v-if="error" class="status error">{{ error }}</div>
     <div v-if="successMsg" class="status success">{{ successMsg }}</div>
 
@@ -355,7 +355,7 @@ async function removeEdge() {
 
     <div v-else-if="selectedNode" class="node-info">
       <h3 class="node-name">{{ selectedNode.label }}</h3>
-      <p class="node-desc">{{ selectedNode.description || '暂无描述' }}</p>
+      <p class="node-desc">{{ selectedNode.description || '这个知识点还没有描述' }}</p>
       <p class="node-meta">掌握阈值：{{ selectedNode.threshold ?? 0.8 }}</p>
     </div>
   </div>

@@ -222,7 +222,7 @@ function formatDate(iso) {
 }
 
 function formatActivity(iso) {
-  if (!iso) return '暂无活动'
+  if (!iso) return '还未开始活动'
   const d = new Date(iso)
   if (isNaN(d.getTime())) return iso
   return d.toLocaleString('zh-CN')
@@ -236,7 +236,7 @@ function formatActivity(iso) {
     <div v-if="loading" class="status">加载中…</div>
     <div v-else-if="error" class="status error">{{ error }}</div>
     <div v-else-if="courses.length === 0" class="status empty">
-      暂无课程，请先在“上传课程”页面创建课程。
+      还没有课程，去上传第一个视频开始吧。
     </div>
 
     <div v-else class="course-list">
@@ -377,7 +377,7 @@ function formatActivity(iso) {
               </template>
             </div>
           </div>
-          <div v-else class="empty-rooms">该课程还没有房间。</div>
+          <div v-else class="empty-rooms">这门课还没有学习房间，点击上方创建一个吧。</div>
         </div>
       </div>
     </div>

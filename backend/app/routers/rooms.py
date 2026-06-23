@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.db.postgres import AsyncSessionLocal
@@ -70,6 +70,7 @@ def _serialize_room(room: Room) -> RoomResponse:
 
 def _serialize_public_room(room: Room) -> RoomPublicResponse:
     return RoomPublicResponse(
+        id=room.id,
         slug=room.slug,
         course_id=room.course_id,
         title=room.title,
@@ -85,7 +86,7 @@ async def _require_course_owner(course_id: str, current_user: User) -> Course:
         result = await session.execute(select(Course).where(Course.id == course_id))
         course = result.scalar_one_or_none()
         if course is None:
-            raise HTTPException(status_code=404, detail="Course not found")
+            raise HTTPException(status_code=404, detail="课程不存在")
         if course.created_by != current_user.id and current_user.role != "admin":
             raise HTTPException(status_code=403, detail="没有权限操作该课程")
         return course
@@ -217,7 +218,22 @@ async def join_room(slug: str, body: RoomJoinRequest):
                 should_count = False
 
         if should_count:
-            room.entry_count += 1
+            if room.max_participants is not None:
+                current_count = await session.scalar(
+                    select(func.count(RoomEntrySession.id)).where(
+                        RoomEntrySession.room_id == room.id
+                    )
+                )
+                if (current_count or 0) >= room.max_participants:
+                    raise HTTPException(
+                        status_code=429, detail="房间参与人数已达上限"
+                    )
+            # Atomic increment to avoid lost updates under concurrency.
+            await session.execute(
+                Room.__table__.update()
+                .where(Room.id == room.id)
+                .values(entry_count=Room.entry_count + 1)
+            )
         room.last_activity_at = datetime.now(timezone.utc)
         await session.commit()
         await session.refresh(room)
