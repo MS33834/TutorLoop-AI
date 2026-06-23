@@ -41,6 +41,7 @@ docker compose up --build
 ```
 
 访问：
+- 前端：http://localhost
 - 后端：http://localhost:8000
 - Neo4j Browser：http://localhost:7474
 
@@ -58,6 +59,14 @@ docker compose up --build
 
 1. 使用 Wrangler：`npx wrangler pages deploy frontend/dist`
 2. 或在 Pages 构建配置中选择 `frontend` 目录，构建命令 `npm run build`，输出目录 `dist`。
+
+### 自建 Docker（可选）
+
+```bash
+cd frontend
+docker build -t tutorloop-frontend:latest .
+docker run -p 80:80 -e VITE_API_BASE_URL=https://api.tutorloop.example.com tutorloop-frontend:latest
+```
 
 ---
 
@@ -94,8 +103,15 @@ kubectl create secret generic tutorloop-secrets \
 ## 5. 监控
 
 - 健康检查：`GET /ready`（存活检查：`GET /live`）
+- Prometheus 指标：`GET /metrics`，暴露 `tutorloop_requests_total` 与 `tutorloop_errors_total`，可直接被 Grafana 抓取。
 - Sentry：配置 `SENTRY_DSN` 后自动上报后端异常与前端错误。
 - 负载测试：`python tests/load_test.py --base-url https://your-api.com`
+
+## 5.1 数据库迁移
+
+- 本地开发：手动运行 `alembic upgrade head`。
+- Docker Compose / 生产启动：设置 `RUN_ALEMBIC_MIGRATIONS=true`，后端容器启动时会自动执行迁移。
+- Render：`render.yaml` 已配置 `preDeployCommand: alembic upgrade head`。
 
 ---
 

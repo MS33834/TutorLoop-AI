@@ -8,7 +8,7 @@ from pathlib import Path
 import sentry_sdk
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from sqlalchemy import text
@@ -30,9 +30,26 @@ if os.environ.get("SENTRY_DSN"):
     )
 
 
+def _run_alembic_migrations() -> None:
+    """Run Alembic migrations synchronously before accepting traffic."""
+    try:
+        from alembic import command
+        from alembic.config import Config
+
+        alembic_cfg = Config("alembic.ini")
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Alembic migrations completed")
+    except Exception as exc:
+        logger.warning("Could not run Alembic migrations: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
+
+    if os.environ.get("RUN_ALEMBIC_MIGRATIONS", "").lower() in {"true", "1", "yes"}:
+        _run_alembic_migrations()
+
     await init_db()
 
     redis_pool = None
@@ -143,6 +160,35 @@ async def readiness_probe():
 @app.get("/live")
 async def liveness_probe():
     return {"alive": True}
+
+
+# Lightweight Prometheus-style metrics (no external dependency).
+_request_count = 0
+_error_count = 0
+
+
+@app.middleware("http")
+async def _metrics_middleware(request: Request, call_next):
+    global _request_count, _error_count
+    _request_count += 1
+    response = await call_next(request)
+    if response.status_code >= 500:
+        _error_count += 1
+    return response
+
+
+@app.get("/metrics")
+async def metrics_probe():
+    """Return basic Prometheus-style metrics for Grafana scraping."""
+    lines = [
+        "# HELP tutorloop_requests_total Total requests served by this instance",
+        "# TYPE tutorloop_requests_total counter",
+        f"tutorloop_requests_total {_request_count}",
+        "# HELP tutorloop_errors_total Total 5xx responses served by this instance",
+        "# TYPE tutorloop_errors_total counter",
+        f"tutorloop_errors_total {_error_count}",
+    ]
+    return PlainTextResponse("\n".join(lines) + "\n")
 
 
 app.mount(
