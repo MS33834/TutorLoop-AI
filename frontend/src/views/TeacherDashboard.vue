@@ -1,14 +1,11 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { useRouter } from 'vue-router'
 import Qrcode from 'qrcode.vue'
 import { apiFetch } from '../api/client.js'
-import {
-  listCourseRooms,
-  createRoom,
-  deleteRoom,
-  updateRoom
-} from '../api/rooms.js'
+import { listCourseRooms, createRoom, deleteRoom, updateRoom } from '../api/rooms.js'
 
+const router = useRouter()
 const courses = ref([])
 const roomsByCourse = ref({})
 const loading = ref(false)
@@ -102,6 +99,10 @@ function startCreate(courseId) {
 
 function cancelCreate() {
   creatingFor.value = ''
+}
+
+function goToClassReport(courseId) {
+  router.push(`/class-report/${encodeURIComponent(courseId)}`)
 }
 
 async function submitCreate(courseId) {
@@ -253,14 +254,25 @@ function formatActivity(iso) {
         </div>
 
         <div v-if="expandedCourse === course.id" class="course-body">
-          <button
+          <div
             v-if="creatingFor !== course.id"
-            class="create-btn"
-            type="button"
-            @click="startCreate(course.id)"
+            class="course-actions"
           >
-            + 创建学习房间
-          </button>
+            <button
+              class="create-btn"
+              type="button"
+              @click="startCreate(course.id)"
+            >
+              + 创建学习房间
+            </button>
+            <button
+              class="report-btn"
+              type="button"
+              @click="goToClassReport(course.id)"
+            >
+              学情看板
+            </button>
+          </div>
 
           <form
             v-else
@@ -463,13 +475,29 @@ function formatActivity(iso) {
   gap: 0.75rem;
 }
 
+.course-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
 .create-btn {
-  align-self: flex-start;
   padding: 0.5rem 0.875rem;
   border: none;
   border-radius: 0.5rem;
   background: #2563eb;
   color: #ffffff;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.report-btn {
+  padding: 0.5rem 0.875rem;
+  border: 1px solid #2563eb;
+  border-radius: 0.5rem;
+  background: #ffffff;
+  color: #2563eb;
   font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;

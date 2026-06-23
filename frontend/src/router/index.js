@@ -8,6 +8,7 @@ const UploadView = () => import('../views/UploadView.vue')
 const GraphView = () => import('../views/GraphView.vue')
 const ReportView = () => import('../views/ReportView.vue')
 const TeacherDashboard = () => import('../views/TeacherDashboard.vue')
+const ClassReportView = () => import('../views/ClassReportView.vue')
 
 const routes = [
   { path: '/', name: 'home', component: HomeView },
@@ -28,6 +29,13 @@ const routes = [
     path: '/dashboard',
     name: 'dashboard',
     component: TeacherDashboard,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/class-report/:courseId',
+    name: 'class-report',
+    component: ClassReportView,
+    props: true,
     meta: { requiresAuth: true }
   },
   {

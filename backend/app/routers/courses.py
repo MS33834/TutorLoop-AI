@@ -14,6 +14,7 @@ from app.limiter import limiter
 from app.models.db import Course, User, Video
 from app.schemas import UserResponse
 from app.services.auth_service import get_current_active_user
+from app.services.class_report_service import generate_class_report
 from app.services.kg_agent import extract_knowledge_graph
 from app.services.video_service import process_video
 from app.tasks.jobs import process_video_task
@@ -329,3 +330,13 @@ async def get_course_graph(course_id: str):
         graph = {"nodes": [], "edges": []}
 
     return graph
+
+
+@router.get("/api/courses/{course_id}/class-report")
+async def get_class_report_endpoint(
+    course_id: str,
+    current_user: User = Depends(get_current_active_user),  # noqa: B008
+):
+    """Return aggregated class-level analytics for the course owner."""
+    await _require_course_owner(course_id, current_user)
+    return await generate_class_report(course_id)
