@@ -11,7 +11,7 @@ from app.config import settings
 from app.db.neo4j import get_graph
 from app.db.postgres import AsyncSessionLocal
 from app.db.vector_search import search_similar_frames_in_course
-from app.models.db import Video, VideoFrame
+from app.models.db import KnowledgeEdge, KnowledgeNode, Video, VideoFrame
 from app.services import bkt_engine
 from app.services.embedding_service import encode_text
 from app.services.recommendation_strategies import get_strategy
@@ -57,6 +57,42 @@ async def _fetch_course_frames(course_id: str) -> list[VideoFrame]:
             .order_by(VideoFrame.timestamp_seconds)
         )
         return list(result.scalars().all())
+
+
+async def _load_graph_from_postgres(course_id: str) -> dict:
+    """Load knowledge graph nodes and edges from Postgres as Neo4j fallback."""
+    async with AsyncSessionLocal() as session:
+        node_result = await session.execute(
+            select(KnowledgeNode)
+            .where(KnowledgeNode.course_id == course_id)
+            .order_by(KnowledgeNode.created_at)
+        )
+        nodes = list(node_result.scalars().all())
+
+        edge_result = await session.execute(
+            select(KnowledgeEdge).where(KnowledgeEdge.course_id == course_id)
+        )
+        edges = list(edge_result.scalars().all())
+
+    return {
+        "nodes": [
+            {
+                "id": n.id,
+                "name": n.name,
+                "description": n.description or "",
+                "threshold": n.threshold,
+            }
+            for n in nodes
+        ],
+        "edges": [
+            {
+                "from": e.source_id,
+                "to": e.target_id,
+                "relation": e.relation,
+            }
+            for e in edges
+        ],
+    }
 
 
 async def _find_best_frame(course_id: str, node: dict) -> dict | None:
@@ -166,20 +202,25 @@ async def recommend_next(user_id: str, course_id: str) -> dict | None:
     mastery_records = await bkt_engine.get_mastery(user_id, course_id)
     mastery_by_node = {record["node_id"]: record for record in mastery_records}
 
-    # Build candidate set using Neo4j graph if available.
+    # Build candidate set from Postgres first (source of truth after editing),
+    # falling back to Neo4j if Postgres has no graph data.
     graph = {"nodes": [], "edges": []}
-    neo4j_available = False
     try:
-        graph = await get_graph(course_id)
-        neo4j_available = True
+        graph = await _load_graph_from_postgres(course_id)
     except Exception as exc:
-        logger.warning("Neo4j unavailable for recommendation, using fallback: %s", exc)
+        logger.warning("Postgres graph load failed: %s", exc)
+
+    if not graph.get("nodes"):
+        try:
+            graph = await get_graph(course_id)
+        except Exception as neo_exc:
+            logger.warning("Neo4j fallback for recommendation failed: %s", neo_exc)
 
     nodes = graph.get("nodes", [])
     edges = graph.get("edges", [])
 
-    if not nodes and not neo4j_available:
-        # Fallback: recommend from mastery records only.
+    if not nodes:
+        # Final fallback: recommend from mastery records only.
         not_mastered = [r for r in mastery_records if r["p_known"] < r["threshold"]]
         if not not_mastered:
             return None
@@ -196,7 +237,7 @@ async def recommend_next(user_id: str, course_id: str) -> dict | None:
             "video_id": frame["video_id"] if frame else None,
             "timestamp_seconds": frame["timestamp_seconds"] if frame else None,
             "reason": (
-                "该知识点掌握度最低，建议优先学习（Neo4j 不可用，采用简单兜底策略）。"
+                "该知识点掌握度最低，建议优先学习（图谱不可用，采用简单兜底策略）。"
             ),
         }
 
