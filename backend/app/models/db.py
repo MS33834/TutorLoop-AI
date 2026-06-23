@@ -127,6 +127,35 @@ class KnowledgeNode(Base):
     )
 
 
+class KnowledgeEdge(Base):
+    __tablename__ = "knowledge_edges"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "course_id", "source_id", "target_id", "relation",
+            name="uq_knowledge_edge"
+        ),
+        Index("ix_knowledge_edges_course_id", "course_id"),
+        Index("ix_knowledge_edges_source_id", "source_id"),
+        Index("ix_knowledge_edges_target_id", "target_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    course_id: Mapped[str] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_nodes.id", ondelete="CASCADE"), nullable=False
+    )
+    target_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_nodes.id", ondelete="CASCADE"), nullable=False
+    )
+    relation: Mapped[str] = mapped_column(String(64), default="prerequisite")
+    created_at: Mapped[datetime] = mapped_column(default=now_utc)
+
+
 class Mastery(Base):
     __tablename__ = "mastery"
 

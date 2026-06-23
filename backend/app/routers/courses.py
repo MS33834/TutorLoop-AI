@@ -7,14 +7,23 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.db.neo4j import get_graph
 from app.db.postgres import AsyncSessionLocal
 from app.limiter import limiter
-from app.models.db import Course, User, Video
-from app.schemas import UserResponse
+from app.models.db import Course, KnowledgeEdge, KnowledgeNode, User, Video
+from app.schemas import (
+    KnowledgeEdgeCreate,
+    KnowledgeEdgeResponse,
+    KnowledgeNodeCreate,
+    KnowledgeNodeResponse,
+    KnowledgeNodeUpdate,
+    UserResponse,
+)
 from app.services.auth_service import get_current_active_user
 from app.services.class_report_service import generate_class_report
+from app.services.embedding_service import encode_text
 from app.services.kg_agent import extract_knowledge_graph
 from app.services.video_service import process_video
 from app.tasks.jobs import process_video_task
@@ -323,13 +332,47 @@ async def build_graph(
 
 @router.get("/api/courses/{course_id}/graph")
 async def get_course_graph(course_id: str):
-    try:
-        graph = await get_graph(course_id)
-    except Exception as exc:
-        logger.warning("Could not retrieve graph from Neo4j: %s", exc)
-        graph = {"nodes": [], "edges": []}
+    """Return the course knowledge graph from Postgres, falling back to Neo4j."""
+    async with AsyncSessionLocal() as session:
+        nodes_result = await session.execute(
+            select(KnowledgeNode)
+            .where(KnowledgeNode.course_id == course_id)
+            .order_by(KnowledgeNode.created_at)
+        )
+        nodes = list(nodes_result.scalars().all())
 
-    return graph
+        if not nodes:
+            try:
+                return await get_graph(course_id)
+            except Exception as exc:
+                logger.warning("Could not retrieve graph from Neo4j: %s", exc)
+                return {"nodes": [], "edges": []}
+
+        edges_result = await session.execute(
+            select(KnowledgeEdge).where(KnowledgeEdge.course_id == course_id)
+        )
+        edges = list(edges_result.scalars().all())
+
+    return {
+        "nodes": [
+            {
+                "id": n.id,
+                "name": n.name,
+                "description": n.description or "",
+                "threshold": n.threshold,
+            }
+            for n in nodes
+        ],
+        "edges": [
+            {
+                "id": e.id,
+                "from": e.source_id,
+                "to": e.target_id,
+                "relation": e.relation,
+            }
+            for e in edges
+        ],
+    }
 
 
 @router.get("/api/courses/{course_id}/class-report")
@@ -344,3 +387,163 @@ async def get_class_report_endpoint(
     """Return aggregated class-level analytics for the course owner."""
     await _require_course_owner(course_id, current_user)
     return await generate_class_report(course_id, skip=skip, limit=limit)
+
+
+@router.post("/api/courses/{course_id}/nodes", response_model=KnowledgeNodeResponse)
+async def create_knowledge_node(
+    course_id: str,
+    body: KnowledgeNodeCreate,
+    current_user: User = Depends(get_current_active_user),  # noqa: B008
+):
+    """Create a new knowledge node for the course."""
+    await _require_course_owner(course_id, current_user)
+
+    async with AsyncSessionLocal() as session:
+        embedding = encode_text(f"{body.name} {body.description or ''}".strip())
+        node = KnowledgeNode(
+            id=str(uuid4()),
+            course_id=course_id,
+            name=body.name,
+            description=body.description,
+            threshold=body.threshold,
+            embedding=embedding,
+        )
+        session.add(node)
+        await session.commit()
+        await session.refresh(node)
+
+    return KnowledgeNodeResponse(
+        id=node.id,
+        course_id=node.course_id,
+        name=node.name,
+        description=node.description,
+        threshold=node.threshold,
+    )
+
+
+@router.patch("/api/nodes/{node_id}", response_model=KnowledgeNodeResponse)
+async def update_knowledge_node(
+    node_id: str,
+    body: KnowledgeNodeUpdate,
+    current_user: User = Depends(get_current_active_user),  # noqa: B008
+):
+    """Update a knowledge node's name, description or threshold."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(KnowledgeNode).where(KnowledgeNode.id == node_id))
+        node = result.scalar_one_or_none()
+        if node is None:
+            raise HTTPException(status_code=404, detail="知识点不存在")
+
+        await _require_course_owner(node.course_id, current_user)
+
+        text_changed = False
+        if body.name is not None:
+            node.name = body.name
+            text_changed = True
+        if body.description is not None:
+            node.description = body.description
+            text_changed = True
+        if body.threshold is not None:
+            node.threshold = body.threshold
+
+        if text_changed:
+            node.embedding = encode_text(f"{node.name} {node.description or ''}".strip())
+
+        await session.commit()
+        await session.refresh(node)
+
+    return KnowledgeNodeResponse(
+        id=node.id,
+        course_id=node.course_id,
+        name=node.name,
+        description=node.description,
+        threshold=node.threshold,
+    )
+
+
+@router.delete("/api/nodes/{node_id}")
+async def delete_knowledge_node(
+    node_id: str,
+    current_user: User = Depends(get_current_active_user),  # noqa: B008
+):
+    """Delete a knowledge node and its associated edges / mastery records."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(KnowledgeNode).where(KnowledgeNode.id == node_id))
+        node = result.scalar_one_or_none()
+        if node is None:
+            raise HTTPException(status_code=404, detail="知识点不存在")
+
+        await _require_course_owner(node.course_id, current_user)
+
+        await session.delete(node)
+        await session.commit()
+
+    return {"ok": True}
+
+
+@router.post("/api/courses/{course_id}/edges", response_model=KnowledgeEdgeResponse)
+async def create_knowledge_edge(
+    course_id: str,
+    body: KnowledgeEdgeCreate,
+    current_user: User = Depends(get_current_active_user),  # noqa: B008
+):
+    """Create a dependency edge between two knowledge nodes."""
+    await _require_course_owner(course_id, current_user)
+
+    if body.source_id == body.target_id:
+        raise HTTPException(status_code=400, detail="边的起点和终点不能相同")
+
+    async with AsyncSessionLocal() as session:
+        # Verify both nodes belong to the course.
+        node_result = await session.execute(
+            select(KnowledgeNode.id).where(
+                KnowledgeNode.course_id == course_id,
+                KnowledgeNode.id.in_([body.source_id, body.target_id]),
+            )
+        )
+        found_node_ids = {row[0] for row in node_result.all()}
+        if len(found_node_ids) != 2:
+            raise HTTPException(status_code=400, detail="起点或终点不属于该课程")
+
+        edge = KnowledgeEdge(
+            id=str(uuid4()),
+            course_id=course_id,
+            source_id=body.source_id,
+            target_id=body.target_id,
+            relation=body.relation or "prerequisite",
+        )
+        session.add(edge)
+        try:
+            await session.commit()
+            await session.refresh(edge)
+        except IntegrityError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=409, detail="该边已存在") from exc
+
+    return KnowledgeEdgeResponse(
+        id=edge.id,
+        course_id=edge.course_id,
+        source_id=edge.source_id,
+        target_id=edge.target_id,
+        relation=edge.relation,
+    )
+
+
+@router.delete("/api/edges/{edge_id}")
+async def delete_knowledge_edge(
+    edge_id: str,
+    current_user: User = Depends(get_current_active_user),  # noqa: B008
+):
+    """Delete a dependency edge."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(KnowledgeEdge).where(KnowledgeEdge.id == edge_id))
+        edge = result.scalar_one_or_none()
+        if edge is None:
+            raise HTTPException(status_code=404, detail="边不存在")
+
+        await _require_course_owner(edge.course_id, current_user)
+
+        await session.delete(edge)
+        await session.commit()
+
+    return {"ok": True}

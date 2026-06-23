@@ -121,6 +121,40 @@ class RoomJoinRequest(BaseModel):
     session_id: Optional[str] = Field(None, max_length=64)
 
 
+class KnowledgeNodeCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=2000)
+    threshold: float = Field(0.8, ge=0.0, le=1.0)
+
+
+class KnowledgeNodeUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=2000)
+    threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
+
+
+class KnowledgeNodeResponse(BaseModel):
+    id: str
+    course_id: str
+    name: str
+    description: Optional[str]
+    threshold: float
+
+
+class KnowledgeEdgeCreate(BaseModel):
+    source_id: str = Field(..., min_length=1, max_length=36)
+    target_id: str = Field(..., min_length=1, max_length=36)
+    relation: Optional[str] = Field("prerequisite", max_length=64)
+
+
+class KnowledgeEdgeResponse(BaseModel):
+    id: str
+    course_id: str
+    source_id: str
+    target_id: str
+    relation: str
+
+
 class KeyHealthSummary(BaseModel):
     model: str
     status: str

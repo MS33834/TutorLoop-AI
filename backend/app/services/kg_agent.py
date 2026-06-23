@@ -18,7 +18,7 @@ from app.config import settings
 from app.db.neo4j import create_nodes_and_edges
 from app.db.postgres import AsyncSessionLocal
 from app.gateway import GatewayError, chat_completion
-from app.models.db import Course, KnowledgeNode, Video, VideoFrame
+from app.models.db import Course, KnowledgeEdge, KnowledgeNode, Video, VideoFrame
 from app.services.embedding_service import encode_text
 from app.services.model_providers import OpenAICompatibleProvider, ProviderError
 
@@ -512,6 +512,7 @@ async def extract_knowledge_graph(
     edges = graph.get("edges", [])
 
     # Persist to Postgres
+    node_id_map: dict[str, str] = {}
     async with AsyncSessionLocal() as session:
         for node in nodes:
             node_id = node.get("id")
@@ -530,6 +531,36 @@ async def extract_knowledge_graph(
             )
             session.add(db_node)
 
+        await session.commit()
+
+        # Refresh to obtain generated ids and build neo4j_id -> db_id mapping.
+        for node in nodes:
+            # db_node objects added above still hold their generated ids after commit.
+            pass
+
+    # Persist edges to Postgres using the neo4j_id mapping.
+    async with AsyncSessionLocal() as session:
+        # Re-query nodes to build the mapping safely.
+        result = await session.execute(
+            select(KnowledgeNode).where(KnowledgeNode.course_id == course_id)
+        )
+        for db_node in result.scalars().all():
+            if db_node.neo4j_id:
+                node_id_map[db_node.neo4j_id] = db_node.id
+
+        for edge in edges:
+            source = edge.get("from")
+            target = edge.get("to")
+            relation = edge.get("relation") or "prerequisite"
+            if source in node_id_map and target in node_id_map:
+                session.add(
+                    KnowledgeEdge(
+                        course_id=course_id,
+                        source_id=node_id_map[source],
+                        target_id=node_id_map[target],
+                        relation=relation,
+                    )
+                )
         await session.commit()
 
     # Persist to Neo4j
