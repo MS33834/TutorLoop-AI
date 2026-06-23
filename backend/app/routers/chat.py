@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -36,6 +37,12 @@ async def _resolve_room_for_anonymous(room_slug: str | None) -> Room | None:
         room = result.scalar_one_or_none()
         if room is None:
             raise HTTPException(status_code=404, detail="房间不存在或已关闭")
+        if room.expires_at and room.expires_at <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=410, detail="房间已过期")
+        if room.password_hash:
+            raise HTTPException(
+                status_code=403, detail="该房间已加密，匿名用户无法访问"
+            )
         if not room.allow_anonymous:
             raise HTTPException(status_code=401, detail="该房间需要登录后才能访问")
         return room

@@ -152,7 +152,7 @@ class Room(Base):
         String(16), unique=True, nullable=False, index=True
     )
     course_id: Mapped[str] = mapped_column(
-        ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True
     )
     created_by: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
@@ -162,6 +162,11 @@ class Room(Base):
     expires_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     allow_anonymous: Mapped[bool] = mapped_column(Boolean, default=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    entry_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_activity_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    welcome_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    max_participants: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    config_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(default=now_utc, onupdate=now_utc)
 

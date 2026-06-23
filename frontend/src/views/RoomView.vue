@@ -51,6 +51,7 @@ const pendingFeedbackCorrect = ref(false)
 const feedbackLoading = ref(false)
 
 const requirePassword = ref(false)
+const requiresLogin = ref(false)
 const roomPassword = ref('')
 const passwordError = ref('')
 const roomAccessGranted = ref(false)
@@ -106,8 +107,14 @@ async function loadCourse() {
   masteryError.value = ''
   recError.value = ''
   passwordError.value = ''
+  requiresLogin.value = false
   try {
     room.value = await getRoomBySlug(props.slug)
+    if (!room.value.allow_anonymous && !user.isLoggedIn) {
+      requiresLogin.value = true
+      pageLoading.value = false
+      return
+    }
     if (room.value.require_password && !roomAccessGranted.value) {
       requirePassword.value = true
       pageLoading.value = false
@@ -441,6 +448,12 @@ function onKeydown(e) {
       <div v-if="passwordError" class="password-error">{{ passwordError }}</div>
     </div>
 
+    <div v-else-if="requiresLogin" class="password-gate">
+      <h2 class="password-title">该房间需要登录</h2>
+      <p class="password-hint">老师设置了仅登录学生可进入，请先登录账号。</p>
+      <button class="password-btn" type="button" @click="$router.push('/login')">去登录</button>
+    </div>
+
     <template v-else>
       <div class="video-section">
         <div class="video-wrapper">
@@ -460,6 +473,7 @@ function onKeydown(e) {
 
         <div class="course-info">
           <h2 class="course-title">{{ room?.title || course?.title || '学习房间' }}</h2>
+          <p v-if="room?.welcome_message" class="course-welcome">{{ room.welcome_message }}</p>
           <p class="course-desc">{{ course?.description || '' }}</p>
           <p class="room-slug">房间号：{{ props.slug }}</p>
         </div>
@@ -973,5 +987,12 @@ function onKeydown(e) {
   margin: 0.25rem 0 0;
   font-size: 0.8125rem;
   color: #6b7280;
+}
+
+.course-welcome {
+  margin: 0 0 0.25rem;
+  font-size: 0.875rem;
+  color: #4b5563;
+  line-height: 1.5;
 }
 </style>

@@ -6,12 +6,18 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.db.postgres import AsyncSessionLocal
 from app.models.db import Course, Room, User
-from app.schemas import RoomCreate, RoomJoinRequest, RoomPublicResponse, RoomResponse
+from app.schemas import (
+    RoomCreate,
+    RoomJoinRequest,
+    RoomPublicResponse,
+    RoomResponse,
+    RoomUpdate,
+)
 from app.services.auth_service import (
     get_current_active_user,
     get_password_hash,
@@ -22,10 +28,26 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+MAX_SLUG_RETRIES = 5
+
 
 def _generate_slug() -> str:
     """Generate a short URL-safe room slug."""
     return secrets.token_urlsafe(6)[:8]
+
+
+def _parse_expires_at(value: str | None) -> datetime | None:
+    """Parse an ISO-8601 datetime and ensure it is timezone-aware."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"expires_at 格式错误: {exc}") from exc
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def _serialize_room(room: Room) -> RoomResponse:
@@ -37,6 +59,11 @@ def _serialize_room(room: Room) -> RoomResponse:
         allow_anonymous=room.allow_anonymous,
         is_active=room.is_active,
         expires_at=room.expires_at.isoformat() if room.expires_at else None,
+        entry_count=room.entry_count,
+        last_activity_at=room.last_activity_at.isoformat() if room.last_activity_at else None,
+        welcome_message=room.welcome_message,
+        max_participants=room.max_participants,
+        config_json=room.config_json,
         created_at=room.created_at.isoformat(),
     )
 
@@ -64,15 +91,20 @@ async def _require_course_owner(course_id: str, current_user: User) -> Course:
         return course
 
 
-async def _get_room_by_slug(slug: str) -> Room:
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(Room).where(Room.slug == slug, Room.is_active == True)
-        )
-        room = result.scalar_one_or_none()
-        if room is None:
-            raise HTTPException(status_code=404, detail="房间不存在或已关闭")
-        return room
+async def _get_room_by_slug(session, slug: str) -> Room | None:
+    """Return an active room by slug, or None if not found."""
+    result = await session.execute(
+        select(Room).where(Room.slug == slug, Room.is_active == True)
+    )
+    return result.scalar_one_or_none()
+
+
+def _ensure_timezone_aware(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 @router.post("/api/courses/{course_id}/rooms", response_model=RoomResponse)
@@ -83,46 +115,44 @@ async def create_room(
 ):
     await _require_course_owner(course_id, current_user)
 
-    expires_at = None
-    if body.expires_at:
-        try:
-            expires_at = datetime.fromisoformat(body.expires_at)
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400, detail=f"expires_at 格式错误: {exc}"
-            ) from exc
+    expires_at = _parse_expires_at(body.expires_at)
+    if expires_at and expires_at <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="过期时间必须晚于当前时间")
 
-    slug = _generate_slug()
-    # Ensure slug uniqueness; retry a few times if collision occurs.
-    for _ in range(5):
-        async with AsyncSessionLocal() as session:
-            existing = await session.execute(select(Room).where(Room.slug == slug))
-            if existing.scalar_one_or_none() is None:
-                break
-        slug = _generate_slug()
-    else:
-        raise HTTPException(status_code=500, detail="无法生成唯一房间号")
-
-    room = Room(
-        id=str(uuid4()),
-        slug=slug,
-        course_id=course_id,
-        created_by=current_user.id,
-        title=body.title,
-        password_hash=get_password_hash(body.password) if body.password else None,
-        expires_at=expires_at,
-        allow_anonymous=body.allow_anonymous,
-        is_active=True,
-    )
-
+    # Generate a unique slug inside a single session. Retries handle the
+    # extremely unlikely collision and concurrent insertion races.
     async with AsyncSessionLocal() as session:
-        session.add(room)
-        await session.commit()
-        await session.refresh(room)
+        slug = _generate_slug()
+        for attempt in range(MAX_SLUG_RETRIES):
+            room = Room(
+                id=str(uuid4()),
+                slug=slug,
+                course_id=course_id,
+                created_by=current_user.id,
+                title=body.title,
+                password_hash=get_password_hash(body.password) if body.password else None,
+                expires_at=expires_at,
+                allow_anonymous=body.allow_anonymous,
+                welcome_message=body.welcome_message,
+                max_participants=body.max_participants,
+                config_json=body.config_json,
+                is_active=True,
+            )
+            session.add(room)
+            try:
+                await session.commit()
+                await session.refresh(room)
+                return _serialize_room(room)
+            except IntegrityError:
+                await session.rollback()
+                if attempt == MAX_SLUG_RETRIES - 1:
+                    raise HTTPException(
+                        status_code=500, detail="无法生成唯一房间号"
+                    ) from None
+                slug = _generate_slug()
 
-    return _serialize_room(room)
+    # Unreachable, but keeps type checkers happy.
+    raise HTTPException(status_code=500, detail="房间创建失败")
 
 
 @router.get("/api/courses/{course_id}/rooms")
@@ -143,32 +173,36 @@ async def list_course_rooms(
 
 @router.get("/api/rooms/{slug}", response_model=RoomPublicResponse)
 async def get_room(slug: str):
-    room = await _get_room_by_slug(slug)
-    if room.expires_at and room.expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=410, detail="房间已过期")
-    return _serialize_public_room(room)
+    async with AsyncSessionLocal() as session:
+        room = await _get_room_by_slug(session, slug)
+        if room is None:
+            raise HTTPException(status_code=404, detail="房间不存在或已关闭")
+        if room.expires_at and room.expires_at <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=410, detail="房间已过期")
+        return _serialize_public_room(room)
 
 
 @router.post("/api/rooms/{slug}/join")
 async def join_room(slug: str, body: RoomJoinRequest):
-    room = await _get_room_by_slug(slug)
-    if room.expires_at and room.expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=410, detail="房间已过期")
+    async with AsyncSessionLocal() as session:
+        room = await _get_room_by_slug(session, slug)
+        if room is None:
+            raise HTTPException(status_code=404, detail="房间不存在或已关闭")
+        if room.expires_at and room.expires_at <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=410, detail="房间已过期")
 
-    if room.password_hash:
-        if not body.password:
-            raise HTTPException(status_code=403, detail="该房间需要密码")
-        if not verify_password(body.password, room.password_hash):
-            raise HTTPException(status_code=403, detail="房间密码错误")
+        if room.password_hash:
+            if not body.password:
+                raise HTTPException(status_code=403, detail="该房间需要密码")
+            if not verify_password(body.password, room.password_hash):
+                raise HTTPException(status_code=403, detail="房间密码错误")
 
-    return _serialize_public_room(room)
+        room.entry_count += 1
+        room.last_activity_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(room)
 
-
-class RoomUpdate(BaseModel):
-    title: str | None = Field(None, max_length=255)
-    is_active: bool | None = None
-    expires_at: str | None = Field(None, max_length=64)
-    password: str | None = Field(None, max_length=64)
+        return _serialize_public_room(room)
 
 
 @router.patch("/api/rooms/{room_id}", response_model=RoomResponse)
@@ -193,19 +227,22 @@ async def update_room(
             if body.expires_at == "":
                 room.expires_at = None
             else:
-                try:
-                    expires_at = datetime.fromisoformat(body.expires_at)
-                    if expires_at.tzinfo is None:
-                        expires_at = expires_at.replace(tzinfo=timezone.utc)
-                    room.expires_at = expires_at
-                except ValueError as exc:
-                    raise HTTPException(
-                        status_code=400, detail=f"expires_at 格式错误: {exc}"
-                    ) from exc
+                expires_at = _parse_expires_at(body.expires_at)
+                if expires_at and expires_at <= datetime.now(timezone.utc):
+                    raise HTTPException(status_code=400, detail="过期时间必须晚于当前时间")
+                room.expires_at = expires_at
         if body.password is not None:
             room.password_hash = (
                 get_password_hash(body.password) if body.password else None
             )
+        if body.allow_anonymous is not None:
+            room.allow_anonymous = body.allow_anonymous
+        if body.welcome_message is not None:
+            room.welcome_message = body.welcome_message
+        if body.max_participants is not None:
+            room.max_participants = body.max_participants
+        if body.config_json is not None:
+            room.config_json = body.config_json
 
         await session.commit()
         await session.refresh(room)

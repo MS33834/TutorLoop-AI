@@ -1,5 +1,6 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
+import Qrcode from 'qrcode.vue'
 import { apiFetch } from '../api/client.js'
 import {
   listCourseRooms,
@@ -13,6 +14,7 @@ const roomsByCourse = ref({})
 const loading = ref(false)
 const error = ref('')
 const expandedCourse = ref('')
+const refreshTimer = ref(null)
 
 const creatingFor = ref('')
 const createTitle = ref('')
@@ -22,14 +24,34 @@ const createAllowAnonymous = ref(true)
 const createLoading = ref(false)
 const createError = ref('')
 
-const baseUrl = computed(() => {
-  const origin = window.location.origin
-  return origin
-})
+const editingRoomId = ref('')
+const editTitle = ref('')
+const editWelcomeMessage = ref('')
+const editExpiresAt = ref('')
+const editAllowAnonymous = ref(true)
+const editMaxParticipants = ref('')
+const editPassword = ref('')
+const editLoading = ref(false)
+const editError = ref('')
+
+const showQrcodeFor = ref('')
+const qrcodeSlug = ref('')
+const copyHint = ref('')
 
 onMounted(() => {
   loadCourses()
 })
+
+onBeforeUnmount(() => {
+  clearRefreshTimer()
+})
+
+function clearRefreshTimer() {
+  if (refreshTimer.value) {
+    clearInterval(refreshTimer.value)
+    refreshTimer.value = null
+  }
+}
 
 async function loadCourses() {
   loading.value = true
@@ -47,12 +69,17 @@ async function loadCourses() {
 async function toggleCourse(courseId) {
   if (expandedCourse.value === courseId) {
     expandedCourse.value = ''
+    clearRefreshTimer()
     return
   }
   expandedCourse.value = courseId
-  if (!roomsByCourse.value[courseId]) {
-    await loadRooms(courseId)
-  }
+  clearRefreshTimer()
+  await loadRooms(courseId)
+  refreshTimer.value = setInterval(() => {
+    if (expandedCourse.value === courseId) {
+      loadRooms(courseId)
+    }
+  }, 10000)
 }
 
 async function loadRooms(courseId) {
@@ -117,23 +144,87 @@ async function toggleRoomActive(courseId, room) {
 }
 
 function shareUrl(slug) {
-  return `${baseUrl.value}/room/${encodeURIComponent(slug)}`
+  return `${window.location.origin}/room/${encodeURIComponent(slug)}`
+}
+
+function openQrcode(room) {
+  qrcodeSlug.value = room.slug
+  showQrcodeFor.value = room.id
+  copyHint.value = ''
+}
+
+function closeQrcode() {
+  showQrcodeFor.value = ''
+  qrcodeSlug.value = ''
 }
 
 async function copyLink(slug) {
   const url = shareUrl(slug)
   try {
     await navigator.clipboard.writeText(url)
-    alert('分享链接已复制：' + url)
+    copyHint.value = '链接已复制'
   } catch {
     prompt('请复制以下链接', url)
   }
+}
+
+function startEdit(room) {
+  editingRoomId.value = room.id
+  editTitle.value = room.title || ''
+  editWelcomeMessage.value = room.welcome_message || ''
+  editExpiresAt.value = room.expires_at ? toDatetimeLocal(room.expires_at) : ''
+  editAllowAnonymous.value = room.allow_anonymous
+  editMaxParticipants.value = room.max_participants ?? ''
+  editPassword.value = ''
+  editError.value = ''
+}
+
+function cancelEdit() {
+  editingRoomId.value = ''
+}
+
+async function submitEdit(courseId, roomId) {
+  editLoading.value = true
+  editError.value = ''
+  try {
+    const payload = {
+      title: editTitle.value.trim() || undefined,
+      welcome_message: editWelcomeMessage.value.trim() || undefined,
+      expires_at: editExpiresAt.value || undefined,
+      allow_anonymous: editAllowAnonymous.value,
+      max_participants: editMaxParticipants.value ? Number(editMaxParticipants.value) : undefined
+    }
+    if (editPassword.value.trim()) {
+      payload.password = editPassword.value.trim()
+    }
+    await updateRoom(roomId, payload)
+    await loadRooms(courseId)
+    cancelEdit()
+  } catch (err) {
+    editError.value = err.message || '保存失败'
+  } finally {
+    editLoading.value = false
+  }
+}
+
+function toDatetimeLocal(iso) {
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ''
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 function formatDate(iso) {
   if (!iso) return '永不过期'
   const d = new Date(iso)
   return isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN')
+}
+
+function formatActivity(iso) {
+  if (!iso) return '暂无活动'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  return d.toLocaleString('zh-CN')
 }
 </script>
 
@@ -208,32 +299,87 @@ function formatDate(iso) {
               class="room-item"
               :class="{ inactive: !room.is_active }"
             >
-              <div class="room-info">
-                <div class="room-title-row">
-                  <span class="room-name">{{ room.title || '未命名房间' }}</span>
-                  <span class="room-status">{{ room.is_active ? '进行中' : '已关闭' }}</span>
+              <div v-if="editingRoomId === room.id" class="edit-form">
+                <label class="field">
+                  <span class="field-label">房间名称</span>
+                  <input v-model="editTitle" class="field-input" type="text" />
+                </label>
+                <label class="field">
+                  <span class="field-label">欢迎语</span>
+                  <textarea v-model="editWelcomeMessage" class="field-input" rows="2" placeholder="学生进入房间时看到的提示"></textarea>
+                </label>
+                <label class="field">
+                  <span class="field-label">过期时间</span>
+                  <input v-model="editExpiresAt" class="field-input" type="datetime-local" />
+                </label>
+                <label class="field">
+                  <span class="field-label">人数上限（留空表示不限）</span>
+                  <input v-model="editMaxParticipants" class="field-input" type="number" min="1" />
+                </label>
+                <label class="field">
+                  <span class="field-label">新密码（留空表示不变）</span>
+                  <input v-model="editPassword" class="field-input" type="password" placeholder="仅在需要修改时填写" />
+                </label>
+                <label class="field checkbox">
+                  <input v-model="editAllowAnonymous" type="checkbox" />
+                  <span class="field-label">允许未登录学生进入</span>
+                </label>
+                <div class="form-actions">
+                  <button class="submit-btn" type="button" :disabled="editLoading" @click="submitEdit(course.id, room.id)">
+                    {{ editLoading ? '保存中…' : '保存' }}
+                  </button>
+                  <button class="cancel-btn" type="button" @click="cancelEdit">取消</button>
                 </div>
-                <div class="room-meta">
-                  <span>房间号：{{ room.slug }}</span>
-                  <span>过期：{{ formatDate(room.expires_at) }}</span>
-                  <span>{{ room.allow_anonymous ? '允许匿名' : '需登录' }}</span>
+                <div v-if="editError" class="form-error">{{ editError }}</div>
+              </div>
+
+              <template v-else>
+                <div class="room-info">
+                  <div class="room-title-row">
+                    <span class="room-name">{{ room.title || '未命名房间' }}</span>
+                    <span class="room-status">{{ room.is_active ? '进行中' : '已关闭' }}</span>
+                  </div>
+                  <p v-if="room.welcome_message" class="room-welcome">{{ room.welcome_message }}</p>
+                  <div class="room-meta">
+                    <span>房间号：{{ room.slug }}</span>
+                    <span>过期：{{ formatDate(room.expires_at) }}</span>
+                    <span>{{ room.allow_anonymous ? '允许匿名' : '需登录' }}</span>
+                    <span>访问：{{ room.entry_count }}次</span>
+                    <span>最近活动：{{ formatActivity(room.last_activity_at) }}</span>
+                    <span v-if="room.max_participants">上限：{{ room.max_participants }}人</span>
+                  </div>
                 </div>
-              </div>
-              <div class="room-actions">
-                <button class="action-btn" type="button" @click="copyLink(room.slug)">复制链接</button>
-                <button
-                  class="action-btn"
-                  type="button"
-                  @click="toggleRoomActive(course.id, room)"
-                >
-                  {{ room.is_active ? '关闭' : '开启' }}
-                </button>
-                <button class="action-btn danger" type="button" @click="removeRoom(course.id, room.id)">删除</button>
-              </div>
+                <div class="room-actions">
+                  <button class="action-btn" type="button" @click="copyLink(room.slug)">复制链接</button>
+                  <button class="action-btn" type="button" @click="openQrcode(room)">二维码</button>
+                  <button class="action-btn" type="button" @click="startEdit(room)">编辑</button>
+                  <button
+                    class="action-btn"
+                    type="button"
+                    @click="toggleRoomActive(course.id, room)"
+                  >
+                    {{ room.is_active ? '关闭' : '开启' }}
+                  </button>
+                  <button class="action-btn danger" type="button" @click="removeRoom(course.id, room.id)">删除</button>
+                </div>
+              </template>
             </div>
           </div>
           <div v-else class="empty-rooms">该课程还没有房间。</div>
         </div>
+      </div>
+    </div>
+
+    <div v-if="showQrcodeFor" class="qrcode-modal" @click.self="closeQrcode">
+      <div class="qrcode-panel">
+        <h3 class="qrcode-title">扫码进入房间</h3>
+        <Qrcode :value="shareUrl(qrcodeSlug)" :size="168" />
+        <p class="qrcode-slug">房间号：{{ qrcodeSlug }}</p>
+        <div class="qrcode-actions">
+          <button class="submit-btn" type="button" @click="copyLink(qrcodeSlug)">复制链接</button>
+          <button class="cancel-btn" type="button" @click="closeQrcode">关闭</button>
+        </div>
+        <p v-if="copyHint" class="copy-hint">{{ copyHint }}</p>
       </div>
     </div>
   </div>
@@ -242,7 +388,7 @@ function formatDate(iso) {
 <style scoped>
 .dashboard {
   padding: 1rem;
-  max-width: 48rem;
+  max-width: 52rem;
   margin: 0 auto;
 }
 
@@ -329,7 +475,8 @@ function formatDate(iso) {
   cursor: pointer;
 }
 
-.create-form {
+.create-form,
+.edit-form {
   display: flex;
   flex-direction: column;
   gap: 0.625rem;
@@ -404,7 +551,7 @@ function formatDate(iso) {
 
 .room-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.75rem;
@@ -446,6 +593,13 @@ function formatDate(iso) {
   color: #374151;
 }
 
+.room-welcome {
+  margin: 0 0 0.375rem;
+  font-size: 0.8125rem;
+  color: #4b5563;
+  line-height: 1.4;
+}
+
 .room-meta {
   display: flex;
   flex-wrap: wrap;
@@ -456,8 +610,11 @@ function formatDate(iso) {
 
 .room-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.375rem;
   flex-shrink: 0;
+  max-width: 12rem;
+  justify-content: flex-end;
 }
 
 .action-btn {
@@ -481,5 +638,49 @@ function formatDate(iso) {
   font-size: 0.875rem;
   background: #f9fafb;
   border-radius: 0.5rem;
+}
+
+.qrcode-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 50;
+}
+
+.qrcode-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1.5rem;
+  background: #ffffff;
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+}
+
+.qrcode-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.qrcode-slug {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #6b7280;
+}
+
+.qrcode-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.copy-hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: #166534;
 }
 </style>

@@ -83,3 +83,34 @@ arq app.tasks.worker.WorkerSettings
 | `REDIS_URL` | Redis 连接串（用于 ARQ 任务队列） |
 | `RUN_ALEMBIC_MIGRATIONS` | 启动时是否执行 Alembic 迁移 |
 | `RECOMMEND_STRATEGY` | 推荐策略：`mastery_gap` 或 `balanced` |
+
+## 学习房间 API
+
+老师可为课程创建学习房间，学生通过短房间号进入并观看课程视频、与 AI 辅导对话。
+
+主要端点：
+
+- `POST /api/courses/{course_id}/rooms` — 创建房间
+- `GET /api/courses/{course_id}/rooms` — 列出课程的所有房间
+- `GET /api/rooms/{slug}` — 公开房间信息
+- `POST /api/rooms/{slug}/join` — 进入房间（校验密码、更新访问统计）
+- `PATCH /api/rooms/{room_id}` — 更新房间配置
+- `DELETE /api/rooms/{room_id}` — 删除房间
+
+房间支持以下特性：
+
+- 8 位短房间号（URL-safe）
+- 可选房间密码
+- 可选过期时间
+- 允许/禁止匿名访问
+- 访问次数 `entry_count` 与最后活动时间 `last_activity_at` 统计
+- 自定义配置字段 `config_json`、欢迎语 `welcome_message`、人数上限 `max_participants`
+
+示例：创建公开匿名房间
+
+```bash
+curl -X POST "http://localhost:8000/api/courses/$COURSE_ID/rooms" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "初一1班晚自习", "allow_anonymous": true}'
+```

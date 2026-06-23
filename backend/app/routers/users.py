@@ -40,6 +40,10 @@ async def _require_room_for_anonymous(room_id: str | None) -> Room | None:
             raise HTTPException(status_code=404, detail="房间不存在或已关闭")
         if room.expires_at and room.expires_at < datetime.now(timezone.utc):
             raise HTTPException(status_code=410, detail="房间已过期")
+        if room.password_hash:
+            raise HTTPException(
+                status_code=403, detail="该房间已加密，匿名用户无法提交记录"
+            )
         return room
 
 

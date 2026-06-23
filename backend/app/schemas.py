@@ -74,6 +74,20 @@ class RoomCreate(BaseModel):
     password: Optional[str] = Field(None, max_length=64)
     expires_at: Optional[str] = Field(None, examples=["2025-12-31T23:59:59+00:00"])
     allow_anonymous: bool = True
+    welcome_message: Optional[str] = Field(None, max_length=1000)
+    max_participants: Optional[int] = Field(None, ge=1)
+    config_json: Optional[dict[str, Any]] = None
+
+
+class RoomUpdate(BaseModel):
+    title: Optional[str] = Field(None, max_length=255)
+    is_active: Optional[bool] = None
+    expires_at: Optional[str] = Field(None, max_length=64)
+    password: Optional[str] = Field(None, max_length=64)
+    allow_anonymous: Optional[bool] = None
+    welcome_message: Optional[str] = Field(None, max_length=1000)
+    max_participants: Optional[int] = Field(None, ge=1)
+    config_json: Optional[dict[str, Any]] = None
 
 
 class RoomResponse(BaseModel):
@@ -84,6 +98,11 @@ class RoomResponse(BaseModel):
     allow_anonymous: bool
     is_active: bool
     expires_at: Optional[str]
+    entry_count: int
+    last_activity_at: Optional[str]
+    welcome_message: Optional[str]
+    max_participants: Optional[int]
+    config_json: Optional[dict[str, Any]]
     created_at: str
 
 
