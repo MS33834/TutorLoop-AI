@@ -2,6 +2,7 @@
 
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -30,26 +31,12 @@ if os.environ.get("SENTRY_DSN"):
     )
 
 
-def _run_alembic_migrations() -> None:
-    """Run Alembic migrations synchronously before accepting traffic."""
-    try:
-        from alembic import command
-        from alembic.config import Config
-
-        alembic_cfg = Config("alembic.ini")
-        command.upgrade(alembic_cfg, "head")
-        logger.info("Alembic migrations completed")
-    except Exception as exc:
-        logger.warning("Could not run Alembic migrations: %s", exc)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
 
-    if os.environ.get("RUN_ALEMBIC_MIGRATIONS", "").lower() in {"true", "1", "yes"}:
-        _run_alembic_migrations()
-
+    # init_db handles Alembic migrations when RUN_ALEMBIC_MIGRATIONS is set,
+    # otherwise it falls back to metadata.create_all. No duplicate run here.
     await init_db()
 
     redis_pool = None
@@ -100,7 +87,7 @@ async def security_headers(request: Request, call_next):
     ] = "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
     response.headers[
         "Content-Security-Policy"
-    ] = "default-src 'self'; frame-ancestors 'none'; connect-src 'self' *;"
+    ] = "default-src 'self'; frame-ancestors 'none'; connect-src 'self'; img-src 'self' data:; media-src 'self'; object-src 'none'; base-uri 'self';"
     return response
 
 
@@ -163,6 +150,9 @@ async def liveness_probe():
 
 
 # Lightweight Prometheus-style metrics (no external dependency).
+# Thread-safe counters guarded by a lock to remain correct under any
+# thread-pool / multi-worker usage.
+_metrics_lock = threading.Lock()
 _request_count = 0
 _error_count = 0
 
@@ -170,23 +160,27 @@ _error_count = 0
 @app.middleware("http")
 async def _metrics_middleware(request: Request, call_next):
     global _request_count, _error_count
-    _request_count += 1
+    with _metrics_lock:
+        _request_count += 1
     response = await call_next(request)
     if response.status_code >= 500:
-        _error_count += 1
+        with _metrics_lock:
+            _error_count += 1
     return response
 
 
 @app.get("/metrics")
 async def metrics_probe():
     """Return basic Prometheus-style metrics for Grafana scraping."""
+    with _metrics_lock:
+        req_total, err_total = _request_count, _error_count
     lines = [
         "# HELP tutorloop_requests_total Total requests served by this instance",
         "# TYPE tutorloop_requests_total counter",
-        f"tutorloop_requests_total {_request_count}",
+        f"tutorloop_requests_total {req_total}",
         "# HELP tutorloop_errors_total Total 5xx responses served by this instance",
         "# TYPE tutorloop_errors_total counter",
-        f"tutorloop_errors_total {_error_count}",
+        f"tutorloop_errors_total {err_total}",
     ]
     return PlainTextResponse("\n".join(lines) + "\n")
 

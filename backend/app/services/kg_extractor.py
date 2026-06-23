@@ -531,22 +531,25 @@ async def extract_knowledge_graph(
             )
             session.add(db_node)
 
+        # Flush to populate generated primary keys before commit so we can
+        # build the neo4j_id -> db_id mapping without a second query.
+        await session.flush()
+        for obj in session.new:
+            if isinstance(obj, KnowledgeNode) and obj.neo4j_id:
+                node_id_map[obj.neo4j_id] = obj.id
         await session.commit()
-
-        # Refresh to obtain generated ids and build neo4j_id -> db_id mapping.
-        for node in nodes:
-            # db_node objects added above still hold their generated ids after commit.
-            pass
 
     # Persist edges to Postgres using the neo4j_id mapping.
     async with AsyncSessionLocal() as session:
-        # Re-query nodes to build the mapping safely.
-        result = await session.execute(
-            select(KnowledgeNode).where(KnowledgeNode.course_id == course_id)
-        )
-        for db_node in result.scalars().all():
-            if db_node.neo4j_id:
-                node_id_map[db_node.neo4j_id] = db_node.id
+        # If flush did not capture every node (e.g. empty neo4j_id), re-query
+        # to ensure the mapping is complete.
+        if not node_id_map:
+            result = await session.execute(
+                select(KnowledgeNode).where(KnowledgeNode.course_id == course_id)
+            )
+            for db_node in result.scalars().all():
+                if db_node.neo4j_id:
+                    node_id_map[db_node.neo4j_id] = db_node.id
 
         for edge in edges:
             source = edge.get("from")

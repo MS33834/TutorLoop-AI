@@ -94,7 +94,9 @@ async def process_video(
         timestamp = item["timestamp_seconds"]
         filename = f"{int(timestamp * 1000)}.jpg"
         file_path = str(target_dir / filename)
-        cv2.imwrite(file_path, item["frame"])
+        if not cv2.imwrite(file_path, item["frame"]):
+            logger.warning("Failed to write frame to %s; skipping", file_path)
+            continue
 
         caption = f"Frame at {timestamp}s"
         frame = VideoFrame(

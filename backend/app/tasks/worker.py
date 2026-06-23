@@ -2,6 +2,7 @@
 
 import logging
 import os
+from urllib.parse import urlparse
 
 from arq import create_pool
 from arq.connections import RedisSettings
@@ -14,21 +15,34 @@ logger = logging.getLogger(__name__)
 
 
 def _redis_settings() -> RedisSettings:
-    """Build RedisSettings from REDIS_URL or defaults."""
+    """Build RedisSettings from REDIS_URL or defaults.
+
+    Supports the full ``redis://[username[:password]@]host[:port][/db]``
+    syntax via urllib.parse, including credentials and a database index.
+    """
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
-    # arq expects host/port/password; parse a simple redis:// URL.
-    if redis_url.startswith("redis://"):
-        rest = redis_url[len("redis://") :]
-        auth_host, _, port_db = rest.partition(":")
-        if "@" in auth_host:
-            password, _, host = auth_host.partition("@")
-        else:
-            password = None
-            host = auth_host
-        port_str, _, _ = port_db.partition("/")
-        port = int(port_str) if port_str else 6379
-        return RedisSettings(host=host, port=port, password=password)
-    return RedisSettings()
+    parsed = urlparse(redis_url)
+
+    if parsed.scheme not in {"redis", "rediss", "unix"}:
+        return RedisSettings()
+
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 6379
+    # urlparse separates username/password from the host and percent-decodes
+    # the password already; pass it straight through to RedisSettings.
+    password = parsed.password
+
+    settings_kwargs: dict = {"host": host, "port": port, "password": password}
+
+    # Honour the database index when present (e.g. redis://host:6379/2).
+    if parsed.path and len(parsed.path) > 1:
+        db_str = parsed.path.lstrip("/")
+        try:
+            settings_kwargs["database"] = int(db_str)
+        except ValueError:
+            logger.warning("Ignoring invalid Redis DB index %r in %s", db_str, redis_url)
+
+    return RedisSettings(**settings_kwargs)
 
 
 async def on_startup(ctx: dict) -> None:

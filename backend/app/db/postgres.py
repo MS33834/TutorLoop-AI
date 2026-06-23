@@ -41,7 +41,7 @@ async def init_db() -> None:
             # Alembic's command.upgrade is synchronous and internally uses
             # asyncio.run; run it in the default thread pool to avoid blocking
             # the caller's event loop.
-            await asyncio.get_event_loop().run_in_executor(
+            await asyncio.get_running_loop().run_in_executor(
                 None, command.upgrade, alembic_cfg, "head"
             )
             logger.info("Alembic migrations applied to head")
