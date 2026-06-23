@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -176,6 +176,13 @@ class Room(Base):
 class Interaction(Base):
     __tablename__ = "interactions"
 
+    __table_args__ = (
+        Index("ix_interactions_course_id", "course_id"),
+        Index("ix_interactions_user_id", "user_id"),
+        Index("ix_interactions_created_at", "created_at"),
+        Index("ix_interactions_course_created", "course_id", "created_at"),
+    )
+
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
@@ -191,4 +198,23 @@ class Interaction(Base):
     is_correct: Mapped[Optional[bool]] = mapped_column(nullable=True)
     help_count: Mapped[int] = mapped_column(Integer, default=0)
     watch_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=now_utc)
+
+
+class RoomEntrySession(Base):
+    __tablename__ = "room_entry_sessions"
+
+    __table_args__ = (
+        UniqueConstraint("room_id", "session_id", name="uq_room_entry_session"),
+        Index("ix_room_entry_sessions_room_id", "room_id"),
+        Index("ix_room_entry_sessions_session_id", "session_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    room_id: Mapped[str] = mapped_column(
+        ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
+    )
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=now_utc)

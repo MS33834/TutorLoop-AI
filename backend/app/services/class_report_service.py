@@ -76,10 +76,11 @@ def _class_avg_mastery(rows: list[tuple[str, float, str, str, float]]) -> float:
     return round(sum(values) / len(values), 3) if values else 0.0
 
 
-async def generate_class_report(course_id: str) -> dict:
+async def generate_class_report(course_id: str, skip: int = 0, limit: int = 20) -> dict:
     """Generate an aggregated class report for a course.
 
     Includes student summaries, weak knowledge nodes, and 7-day activity trend.
+    Student list is paginated via ``skip`` / ``limit``.
     """
     async with AsyncSessionLocal() as session:
         student_count_result = await session.execute(
@@ -140,6 +141,8 @@ async def generate_class_report(course_id: str) -> dict:
             )
             .group_by(Interaction.user_id, User.username)
             .order_by(func.max(Interaction.created_at).desc())
+            .offset(skip)
+            .limit(limit)
         )
 
         mastery_rows = await session.execute(
@@ -206,4 +209,9 @@ async def generate_class_report(course_id: str) -> dict:
         "students": students,
         "weak_nodes": _aggregate_weak_nodes(mastery_list),
         "activity_trend": _fill_activity_trend(activity_rows.all()),
+        "pagination": {
+            "total": total_students,
+            "skip": skip,
+            "limit": limit,
+        },
     }

@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.db.postgres import AsyncSessionLocal
-from app.models.db import Course, Room, User
+from app.models.db import Course, Room, RoomEntrySession, User
 from app.schemas import (
     RoomCreate,
     RoomJoinRequest,
@@ -197,7 +197,27 @@ async def join_room(slug: str, body: RoomJoinRequest):
             if not verify_password(body.password, room.password_hash):
                 raise HTTPException(status_code=403, detail="房间密码错误")
 
-        room.entry_count += 1
+        should_count = True
+        if body.session_id:
+            existing_result = await session.execute(
+                select(RoomEntrySession).where(
+                    RoomEntrySession.room_id == room.id,
+                    RoomEntrySession.session_id == body.session_id,
+                )
+            )
+            if existing_result.scalar_one_or_none() is None:
+                session.add(
+                    RoomEntrySession(
+                        id=str(uuid4()),
+                        room_id=room.id,
+                        session_id=body.session_id,
+                    )
+                )
+            else:
+                should_count = False
+
+        if should_count:
+            room.entry_count += 1
         room.last_activity_at = datetime.now(timezone.utc)
         await session.commit()
         await session.refresh(room)

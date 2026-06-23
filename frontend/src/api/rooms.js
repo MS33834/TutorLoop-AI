@@ -15,10 +15,13 @@ export function getRoomBySlug(slug) {
   return apiFetch(`/api/rooms/${encodeURIComponent(slug)}`)
 }
 
-export function joinRoom(slug, password) {
+export function joinRoom(slug, password, sessionId) {
   return apiFetch(`/api/rooms/${encodeURIComponent(slug)}/join`, {
     method: 'POST',
-    body: JSON.stringify({ password: password || undefined })
+    body: JSON.stringify({
+      password: password || undefined,
+      session_id: sessionId || undefined
+    })
   })
 }
 

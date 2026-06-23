@@ -118,6 +118,7 @@ class RoomPublicResponse(BaseModel):
 
 class RoomJoinRequest(BaseModel):
     password: Optional[str] = Field(None, max_length=64)
+    session_id: Optional[str] = Field(None, max_length=64)
 
 
 class KeyHealthSummary(BaseModel):

@@ -55,6 +55,7 @@ const requiresLogin = ref(false)
 const roomPassword = ref('')
 const passwordError = ref('')
 const roomAccessGranted = ref(false)
+const roomSessionId = ref('')
 
 let streamAbortController = null
 let isUnmounted = false
@@ -64,6 +65,8 @@ const roomUuid = computed(() => room.value?.id || '')
 
 onMounted(() => {
   chat.setRoom(props.slug)
+  roomSessionId.value = sessionStorage.getItem('room_session_id') || crypto.randomUUID()
+  sessionStorage.setItem('room_session_id', roomSessionId.value)
   loadCourse()
 })
 
@@ -121,6 +124,9 @@ async function loadCourse() {
       return
     }
     requirePassword.value = false
+    if (!room.value.require_password) {
+      await recordRoomEntry()
+    }
     course.value = await apiFetch(`/api/courses/${room.value.course_id}`)
     const videos = course.value?.videos || []
     currentVideo.value = videos[0] || null
@@ -136,11 +142,21 @@ async function loadCourse() {
 async function submitPassword() {
   passwordError.value = ''
   try {
-    await joinRoom(props.slug, roomPassword.value)
+    await joinRoom(props.slug, roomPassword.value, roomSessionId.value)
     roomAccessGranted.value = true
     await loadCourse()
   } catch (err) {
     passwordError.value = err.message || '密码验证失败'
+  }
+}
+
+async function recordRoomEntry() {
+  try {
+    await joinRoom(props.slug, null, roomSessionId.value)
+  } catch (err) {
+    // 入口记录失败不应阻塞学生学习
+    // eslint-disable-next-line no-console
+    console.warn('记录房间访问失败', err)
   }
 }
 

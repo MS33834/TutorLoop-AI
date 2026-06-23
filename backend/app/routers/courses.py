@@ -4,7 +4,7 @@ import logging
 import os
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -333,10 +333,14 @@ async def get_course_graph(course_id: str):
 
 
 @router.get("/api/courses/{course_id}/class-report")
+@limiter.limit("30/minute")
 async def get_class_report_endpoint(
+    request: Request,
     course_id: str,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_active_user),  # noqa: B008
 ):
     """Return aggregated class-level analytics for the course owner."""
     await _require_course_owner(course_id, current_user)
-    return await generate_class_report(course_id)
+    return await generate_class_report(course_id, skip=skip, limit=limit)

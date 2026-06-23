@@ -23,22 +23,37 @@ const router = useRouter()
 const loading = ref(false)
 const error = ref('')
 const report = ref(null)
+const pageSize = ref(20)
+const currentSkip = ref(0)
 
 onMounted(() => {
   loadReport()
 })
 
-async function loadReport() {
+async function loadReport(skip = 0) {
   loading.value = true
   error.value = ''
+  currentSkip.value = skip
   try {
-    report.value = await getClassReport(props.courseId)
+    report.value = await getClassReport(props.courseId, { skip, limit: pageSize.value })
   } catch (err) {
     error.value = err.message || '加载班级报告失败'
     report.value = null
   } finally {
     loading.value = false
   }
+}
+
+const totalPages = computed(() => {
+  const total = report.value?.pagination?.total || 0
+  return Math.ceil(total / pageSize.value) || 1
+})
+
+const currentPage = computed(() => Math.floor(currentSkip.value / pageSize.value) + 1)
+
+function goToPage(page) {
+  const newSkip = (page - 1) * pageSize.value
+  loadReport(Math.max(0, newSkip))
 }
 
 function formatPercent(value) {
@@ -183,6 +198,26 @@ const activityChartOptions = {
           </table>
         </div>
         <p v-else class="empty">暂无学生参与数据。</p>
+
+        <div v-if="report.pagination?.total > pageSize" class="pagination">
+          <button
+            type="button"
+            class="page-btn"
+            :disabled="currentPage <= 1"
+            @click="goToPage(currentPage - 1)"
+          >
+            上一页
+          </button>
+          <span class="page-info">第 {{ currentPage }} / {{ totalPages }} 页</span>
+          <button
+            type="button"
+            class="page-btn"
+            :disabled="currentPage >= totalPages"
+            @click="goToPage(currentPage + 1)"
+          >
+            下一页
+          </button>
+        </div>
       </section>
     </template>
   </div>
@@ -368,5 +403,32 @@ const activityChartOptions = {
 
 .student-table tbody tr:hover {
   background: #f9fafb;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.page-btn {
+  padding: 0.375rem 0.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.375rem;
+  background: #ffffff;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.page-btn:disabled {
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+
+.page-info {
+  font-size: 0.875rem;
+  color: #6b7280;
 }
 </style>
