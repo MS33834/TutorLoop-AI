@@ -8,12 +8,33 @@ const router = useRouter()
 const title = ref('')
 const description = ref('')
 const videoFile = ref(null)
+const materialFiles = ref([])
 const status = ref('')
 const error = ref('')
 const loading = ref(false)
 
 function onFileChange(e) {
   videoFile.value = e.target.files[0] || null
+}
+
+function onMaterialChange(e) {
+  materialFiles.value = Array.from(e.target.files || [])
+}
+
+function removeMaterial(index) {
+  materialFiles.value.splice(index, 1)
+}
+
+async function uploadMaterials(courseId) {
+  if (!materialFiles.value.length) return
+  for (const file of materialFiles.value) {
+    const formData = new FormData()
+    formData.append('file', file)
+    await apiFetch(`/api/courses/${courseId}/materials`, {
+      method: 'POST',
+      body: formData
+    })
+  }
 }
 
 function setStatus(message) {
@@ -55,6 +76,9 @@ async function submit() {
       videoId = uploadResult.video_id || null
     }
 
+    setStatus('正在上传课程资料…')
+    await uploadMaterials(courseId)
+
     setStatus('正在分析视频并构建知识图谱…')
     await apiFetch(`/api/courses/${courseId}/build-graph`, {
       method: 'POST',
@@ -93,6 +117,31 @@ async function submit() {
         <span class="label">视频文件</span>
         <input class="file-input" type="file" accept="video/*" @change="onFileChange" />
         <span v-if="videoFile" class="file-name">已选择：{{ videoFile.name }}</span>
+      </label>
+
+      <label class="field">
+        <span class="label">课程资料（PDF / 图片，可选）</span>
+        <input
+          class="file-input"
+          type="file"
+          accept=".pdf,.png,.jpg,.jpeg,.webp"
+          multiple
+          @change="onMaterialChange"
+        />
+        <ul v-if="materialFiles.length" class="material-list">
+          <li v-for="(file, idx) in materialFiles" :key="idx" class="material-item">
+            <span class="material-name">{{ file.name }}</span>
+            <button
+              class="remove-material"
+              type="button"
+              :disabled="loading"
+              @click="removeMaterial(idx)"
+            >
+              移除
+            </button>
+          </li>
+        </ul>
+        <span v-else class="file-hint">可上传课件 PDF 或参考图片辅助 AI 答疑</span>
       </label>
 
       <button class="submit-btn" type="submit" :disabled="loading">
@@ -162,6 +211,53 @@ async function submit() {
 .file-name {
   font-size: 0.875rem;
   color: #4b5563;
+}
+
+.file-hint {
+  font-size: 0.8125rem;
+  color: #6b7280;
+}
+
+.material-list {
+  margin: 0.375rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.material-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.375rem;
+}
+
+.material-name {
+  font-size: 0.875rem;
+  color: #374151;
+  word-break: break-all;
+}
+
+.remove-material {
+  flex-shrink: 0;
+  padding: 0.25rem 0.5rem;
+  border: none;
+  border-radius: 0.25rem;
+  background: #fee2e2;
+  color: #b91c1c;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.remove-material:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .submit-btn {

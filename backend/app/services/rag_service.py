@@ -7,13 +7,15 @@ import math
 from sqlalchemy import select, text
 
 from app.db.postgres import AsyncSessionLocal
-from app.models.db import KnowledgeNode, Video, VideoFrame
+from app.models.db import CourseMaterial, KnowledgeNode, Video, VideoFrame
 from app.services.embedding_service import encode_text
 
 logger = logging.getLogger(__name__)
 
 TOP_K_FRAMES = 4
 TOP_K_NODES = 3
+TOP_K_MATERIALS = 2
+MAX_MATERIAL_TEXT_LENGTH = 4000
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -218,8 +220,52 @@ async def retrieve_context(
                 course_id, question_embedding, TOP_K_NODES
             )
 
+    # Retrieve relevant course materials (PDF text / image captions) by simple
+    # keyword/length heuristic if embeddings are unavailable; these augment the
+    # video-based RAG with supplementary documents.
+    materials = []
+    if course_id:
+        materials = await _retrieve_course_materials(course_id)
+
     return {
         "frames": merged_frames[: TOP_K_FRAMES * 2],
         "knowledge_nodes": similar_nodes,
         "screenshot_path": screenshot_path,
+        "materials": materials,
     }
+
+
+async def _retrieve_course_materials(course_id: str) -> list[dict]:
+    """Return the most useful extracted text snippets from course materials.
+
+    For now we select the longest / most text-rich completed PDFs, capped by
+    length so they don't overwhelm the context window. Future enhancement:
+    vectorize material chunks and rank by cosine similarity to the question.
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(CourseMaterial)
+            .where(
+                CourseMaterial.course_id == course_id,
+                CourseMaterial.status.in_(["completed", "completed_with_warning"]),
+                CourseMaterial.extracted_text.isnot(None),
+            )
+            .order_by(CourseMaterial.created_at.desc())
+            .limit(TOP_K_MATERIALS)
+        )
+        materials = result.scalars().all()
+
+    output = []
+    for m in materials:
+        text = (m.extracted_text or "").strip()
+        if not text:
+            continue
+        if len(text) > MAX_MATERIAL_TEXT_LENGTH:
+            text = text[:MAX_MATERIAL_TEXT_LENGTH] + "…"
+        output.append({
+            "id": m.id,
+            "title": m.title,
+            "file_type": m.file_type,
+            "text": text,
+        })
+    return output

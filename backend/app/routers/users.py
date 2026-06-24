@@ -1,13 +1,13 @@
 """User mastery, interactions, and recommendation endpoints."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 
 from app.db.postgres import AsyncSessionLocal
-from app.models.db import Room, User
+from app.models.db import Interaction, Room, User
 from app.schemas import (
     InteractionCreate,
     InteractionResponse,
@@ -100,7 +100,12 @@ async def create_interaction(
         except HTTPException:
             raise
         except Exception as exc:
-            logger.error("Mastery update failed for user=%s node=%s: %s", effective_user_id, body.node_id, exc)
+            logger.error(
+                "Mastery update failed for user=%s node=%s: %s",
+                effective_user_id,
+                body.node_id,
+                exc,
+            )
 
     result = InteractionResponse(**interaction, mastery_updated=mastery_updated)
     return result
@@ -158,3 +163,136 @@ async def report_for_me(
         raise HTTPException(
             status_code=503, detail="报告生成失败，请稍后重试。"
         ) from exc
+
+
+@router.get("/api/users/me/timeline")
+async def get_my_timeline(
+    course_id: str = Query(..., description="Course ID"),
+    days: int = Query(30, ge=7, le=90),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Return daily activity and mastery trend data for time-series visualizations."""
+    if not course_id:
+        raise HTTPException(status_code=422, detail="缺少课程 ID")
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Interaction)
+            .where(
+                Interaction.user_id == current_user.id,
+                Interaction.course_id == course_id,
+                Interaction.created_at >= since,
+            )
+            .order_by(Interaction.created_at)
+        )
+        interactions = result.scalars().all()
+
+    daily = {}
+    weekly_correct = {}
+    weekly_total = {}
+    for i in interactions:
+        day = i.created_at.date().isoformat()
+        bucket = daily.setdefault(
+            day, {"date": day, "count": 0, "watch_minutes": 0.0, "correct": 0, "incorrect": 0}
+        )
+        bucket["count"] += 1
+        bucket["watch_minutes"] += (i.watch_seconds or 0) / 60
+        if i.is_correct is True:
+            bucket["correct"] += 1
+        elif i.is_correct is False:
+            bucket["incorrect"] += 1
+
+        week = i.created_at.strftime("%Y-W%W")
+        weekly_total[week] = weekly_total.get(week, 0) + 1
+        if i.is_correct is True:
+            weekly_correct[week] = weekly_correct.get(week, 0) + 1
+
+    # Fill missing days with zeros so the heatmap is continuous.
+    all_days = []
+    for offset in range(days):
+        d = (datetime.now(timezone.utc) - timedelta(days=offset)).date().isoformat()
+        all_days.append(d)
+    all_days.reverse()
+
+    empty_day = {"date": "", "count": 0, "watch_minutes": 0.0, "correct": 0, "incorrect": 0}
+    daily_activity = []
+    for d in all_days:
+        day = daily.get(d, {**empty_day, "date": d})
+        daily_activity.append(day)
+
+    weekly_accuracy = [
+        {
+            "week": week,
+            "accuracy": round(weekly_correct.get(week, 0) / total, 3) if total else 0.0,
+            "total": total,
+        }
+        for week, total in sorted(weekly_total.items())
+    ]
+
+    mastery_records = await bkt_engine.get_mastery(current_user.id, course_id)
+    mastery_curve = [
+        {
+            "node_id": r["node_id"],
+            "name": r["name"],
+            "p_known": round(r["p_known"], 3),
+            "threshold": round(r["threshold"], 3),
+        }
+        for r in mastery_records
+    ]
+
+    return {
+        "course_id": course_id,
+        "days": days,
+        "daily_activity": daily_activity,
+        "weekly_accuracy": weekly_accuracy,
+        "mastery_curve": mastery_curve,
+    }
+
+
+@router.get("/api/users/me/interactions", response_model=list[InteractionResponse])
+async def list_my_interactions(
+    course_id: str = Query(..., description="Course ID"),
+    node_id: str | None = Query(None, description="Optional knowledge node ID filter"),
+    limit: int = Query(20, ge=1, le=100),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Return the current user's recent interactions for a course/node."""
+    if not course_id:
+        raise HTTPException(status_code=422, detail="缺少课程 ID")
+
+    async with AsyncSessionLocal() as session:
+        stmt = (
+            select(Interaction)
+            .where(
+                Interaction.user_id == current_user.id,
+                Interaction.course_id == course_id,
+            )
+            .order_by(Interaction.created_at.desc())
+            .limit(limit)
+        )
+        if node_id:
+            stmt = stmt.where(Interaction.node_id == node_id)
+
+        result = await session.execute(stmt)
+        interactions = result.scalars().all()
+
+    return [
+        InteractionResponse(
+            id=i.id,
+            user_id=i.user_id,
+            room_id=i.room_id,
+            course_id=i.course_id,
+            video_id=i.video_id,
+            video_timestamp=i.video_timestamp,
+            question_text=i.question_text,
+            answer_text=i.answer_text,
+            is_correct=i.is_correct,
+            help_count=i.help_count,
+            watch_seconds=i.watch_seconds,
+            node_id=i.node_id,
+            created_at=i.created_at.isoformat(),
+        )
+        for i in interactions
+    ]

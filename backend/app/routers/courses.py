@@ -1,7 +1,9 @@
 """Course, video, and knowledge graph endpoints."""
 
+import json
 import logging
 import os
+import re
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -13,7 +15,7 @@ from app.config import settings
 from app.db.neo4j import get_graph
 from app.db.postgres import AsyncSessionLocal
 from app.limiter import limiter
-from app.models.db import Course, KnowledgeEdge, KnowledgeNode, User, Video
+from app.models.db import Course, CourseMaterial, KnowledgeEdge, KnowledgeNode, User, Video
 from app.schemas import (
     KnowledgeEdgeCreate,
     KnowledgeEdgeResponse,
@@ -34,6 +36,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 MAX_VIDEO_SIZE_BYTES = 500 * 1024 * 1024  # 500 MB
+MAX_MATERIAL_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 ALLOWED_VIDEO_MIME_TYPES = {
     "video/mp4",
@@ -41,6 +44,13 @@ ALLOWED_VIDEO_MIME_TYPES = {
     "video/x-msvideo",
     "video/x-matroska",
     "video/webm",
+}
+ALLOWED_MATERIAL_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
+ALLOWED_MATERIAL_MIME_TYPES = {
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "image/webp",
 }
 
 
@@ -127,6 +137,13 @@ class VideoUploadResponse(BaseModel):
     title: str
     status: str
     frame_count: int | None = None
+
+
+class MaterialUploadResponse(BaseModel):
+    material_id: str
+    title: str
+    file_type: str
+    status: str
 
 
 class BuildGraphRequest(BaseModel):
@@ -231,6 +248,157 @@ def _safe_remove(path: str) -> None:
         logger.warning("Could not remove temporary file %s: %s", path, exc)
 
 
+def _validate_material_upload(file: UploadFile) -> tuple[str, str]:
+    """Validate file type and size for course material (PDF/image) uploads."""
+    filename = file.filename or ""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_MATERIAL_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail=f"不支持的文件类型: {ext}。仅支持 PDF 与图片（PNG/JPG/WEBP）",
+        )
+    if file.content_type not in ALLOWED_MATERIAL_MIME_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"不支持的 MIME 类型: {file.content_type}",
+        )
+    file_type = "pdf" if ext == ".pdf" else "image"
+    return ext, file_type
+
+
+ALLOWED_SUBTITLE_EXTENSIONS = {".srt", ".vtt", ".json"}
+ALLOWED_SUBTITLE_MIME_TYPES = {
+    "application/x-subrip",
+    "text/plain",
+    "text/vtt",
+    "application/json",
+}
+MAX_SUBTITLE_SIZE_BYTES = 2 * 1024 * 1024  # 2 MB
+
+
+def _parse_srt(content: str) -> list[dict]:
+    """Parse SRT subtitle content into cue list."""
+    cues = []
+    blocks = re.split(r"\n\s*\n", content.strip())
+    time_pattern = re.compile(
+        r"(\d{1,2}):(\d{2}):(\d{2})[,.](\d{3})"
+        r"\s*-->\s*"
+        r"(\d{1,2}):(\d{2}):(\d{2})[,.](\d{3})"
+    )
+    for block in blocks:
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if len(lines) < 2:
+            continue
+        match = time_pattern.search(lines[0]) if re.match(r"\d+", lines[0]) else None
+        if not match and len(lines) >= 2:
+            match = time_pattern.search(lines[1])
+        if not match:
+            continue
+        text_lines = lines[2:] if re.match(r"\d+", lines[0]) else lines[2:]
+        if not text_lines and len(lines) >= 3:
+            text_lines = lines[2:]
+        start = (
+            int(match.group(1)) * 3600
+            + int(match.group(2)) * 60
+            + int(match.group(3))
+            + int(match.group(4)) / 1000
+        )
+        end = (
+            int(match.group(5)) * 3600
+            + int(match.group(6)) * 60
+            + int(match.group(7))
+            + int(match.group(8)) / 1000
+        )
+        cues.append({"start": round(start, 2), "end": round(end, 2), "text": " ".join(text_lines)})
+    return cues
+
+
+def _parse_vtt(content: str) -> list[dict]:
+    """Parse WebVTT subtitle content into cue list."""
+    cues = []
+    lines = content.splitlines()
+    if not lines or not lines[0].startswith("WEBVTT"):
+        return cues
+    time_pattern = re.compile(
+        r"(\d{1,2}:)?(\d{2}):(\d{2})\.(\d{3})"
+        r"\s*-->\s*"
+        r"(\d{1,2}:)?(\d{2}):(\d{2})\.(\d{3})"
+    )
+    i = 1
+    while i < len(lines):
+        line = lines[i].strip()
+        match = time_pattern.search(line)
+        if match:
+            text_lines = []
+            i += 1
+            while i < len(lines) and lines[i].strip():
+                text_lines.append(lines[i].strip())
+                i += 1
+            start_h = int(match.group(1).rstrip(":")) if match.group(1) else 0
+            start_m = int(match.group(2))
+            start_s = int(match.group(3))
+            start_ms = int(match.group(4))
+            end_h = int(match.group(5).rstrip(":")) if match.group(5) else 0
+            end_m = int(match.group(6))
+            end_s = int(match.group(7))
+            end_ms = int(match.group(8))
+            start = start_h * 3600 + start_m * 60 + start_s + start_ms / 1000
+            end = end_h * 3600 + end_m * 60 + end_s + end_ms / 1000
+            cues.append(
+                {"start": round(start, 2), "end": round(end, 2), "text": " ".join(text_lines)}
+            )
+        else:
+            i += 1
+    return cues
+
+
+def _parse_subtitle_file(file_path: str, ext: str) -> list[dict]:
+    """Parse SRT/VTT/JSON subtitle files into normalized cues."""
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        content = f.read()
+    if ext == ".json":
+        parsed = json.loads(content)
+        if isinstance(parsed, list):
+            return [
+                {
+                    "start": float(c.get("start", 0)),
+                    "end": float(c.get("end", 0)),
+                    "text": str(c.get("text", "")),
+                }
+                for c in parsed
+            ]
+        raise HTTPException(status_code=422, detail="JSON 字幕格式应为对象数组")
+    if ext == ".vtt":
+        return _parse_vtt(content)
+    return _parse_srt(content)
+
+
+def _extract_pdf_text(file_path: str) -> str:
+    """Extract text from a PDF file using pypdf."""
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(file_path)
+        parts = []
+        for page in reader.pages:
+            text = page.extract_text() or ""
+            if text.strip():
+                parts.append(text.strip())
+        return "\n\n".join(parts)
+    except Exception as exc:
+        logger.warning("Could not extract PDF text from %s: %s", file_path, exc)
+        return ""
+
+
+def _persist_uploaded_file(temp_path: str, course_id: str, ext: str) -> str:
+    """Move an uploaded file from temp path to the course upload directory."""
+    upload_dir = os.path.join(settings.upload_dir.rstrip("/"), "materials", course_id)
+    os.makedirs(upload_dir, exist_ok=True)
+    dest = os.path.join(upload_dir, f"{uuid4()}{ext}")
+    os.rename(temp_path, dest)
+    return dest
+
+
 @router.post("/api/courses/{course_id}/videos", response_model=VideoUploadResponse)
 @limiter.limit("10/minute")
 async def upload_video(
@@ -316,6 +484,220 @@ async def upload_video(
         )
     finally:
         _safe_remove(temp_path)
+
+
+@router.post("/api/courses/{course_id}/materials", response_model=MaterialUploadResponse)
+@limiter.limit("10/minute")
+async def upload_course_material(
+    request: Request,
+    course_id: str,
+    file: UploadFile = File(...),  # noqa: B008
+    title: str | None = Form(None),  # noqa: B008
+    current_user: User = Depends(get_current_active_user),  # noqa: B008
+):
+    """Upload a PDF or image material for a course and extract text if possible."""
+    await _require_course_owner(course_id, current_user)
+
+    ext, file_type = _validate_material_upload(file)
+    safe_title = title or (file.filename or "untitled")
+    temp_path = f"/tmp/{uuid4()}{ext}"
+    material_id = str(uuid4())
+
+    total_size = 0
+    try:
+        with open(temp_path, "wb") as f:
+            while True:
+                chunk = await file.read(1024 * 1024)  # 1 MB chunks
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > MAX_MATERIAL_SIZE_BYTES:
+                    raise HTTPException(status_code=413, detail="资料文件过大，请控制在 50MB 以内")
+                f.write(chunk)
+            if total_size == 0:
+                raise HTTPException(status_code=400, detail="上传文件为空")
+    except HTTPException:
+        _safe_remove(temp_path)
+        raise
+    except Exception as exc:
+        _safe_remove(temp_path)
+        raise HTTPException(
+            status_code=400, detail=f"无法读取上传文件: {exc}"
+        ) from exc
+    finally:
+        await file.close()
+
+    # Persist the file under the configured upload directory.
+    try:
+        dest_path = _persist_uploaded_file(temp_path, course_id, ext)
+    except Exception as exc:
+        _safe_remove(temp_path)
+        raise HTTPException(
+            status_code=500, detail=f"保存文件失败: {exc}"
+        ) from exc
+
+    # Extract text for PDFs; images keep extracted_text empty for now (VLM caption
+    # can be added later as an enhancement).
+    extracted_text = ""
+    status = "completed"
+    if file_type == "pdf":
+        extracted_text = _extract_pdf_text(dest_path)
+        if not extracted_text.strip():
+            status = "completed_with_warning"
+
+    material = CourseMaterial(
+        id=material_id,
+        course_id=course_id,
+        title=safe_title,
+        file_type=file_type,
+        file_path=dest_path,
+        extracted_text=extracted_text or None,
+        status=status,
+    )
+    async with AsyncSessionLocal() as session:
+        session.add(material)
+        await session.commit()
+
+    return MaterialUploadResponse(
+        material_id=material_id,
+        title=safe_title,
+        file_type=file_type,
+        status=status,
+    )
+
+
+@router.get("/api/courses/{course_id}/materials")
+async def list_course_materials(
+    course_id: str,
+    current_user: User = Depends(get_current_active_user),  # noqa: B008
+):
+    """List all PDF/image materials for a course (owner only)."""
+    await _require_course_owner(course_id, current_user)
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(CourseMaterial)
+            .where(CourseMaterial.course_id == course_id)
+            .order_by(CourseMaterial.created_at.desc())
+        )
+        materials = result.scalars().all()
+
+    return [
+        {
+            "id": m.id,
+            "title": m.title,
+            "file_type": m.file_type,
+            "status": m.status,
+            "extracted_text": m.extracted_text,
+            "created_at": m.created_at.isoformat(),
+        }
+        for m in materials
+    ]
+
+
+@router.delete("/api/materials/{material_id}")
+async def delete_course_material(
+    material_id: str,
+    current_user: User = Depends(get_current_active_user),  # noqa: B008
+):
+    """Delete a course material and its stored file."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(CourseMaterial).where(CourseMaterial.id == material_id)
+        )
+        material = result.scalar_one_or_none()
+        if material is None:
+            raise HTTPException(status_code=404, detail="资料不存在")
+
+        await _require_course_owner(material.course_id, current_user)
+        _safe_remove(material.file_path)
+        await session.delete(material)
+        await session.commit()
+
+    return {"ok": True}
+
+
+@router.post("/api/videos/{video_id}/subtitles")
+@limiter.limit("10/minute")
+async def upload_video_subtitles(
+    request: Request,
+    video_id: str,
+    file: UploadFile = File(...),  # noqa: B008
+    current_user: User = Depends(get_current_active_user),  # noqa: B008
+):
+    """Upload an SRT/VTT/JSON subtitle file for a video (course owner only)."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Video).where(Video.id == video_id))
+        video = result.scalar_one_or_none()
+        if video is None:
+            raise HTTPException(status_code=404, detail="视频不存在")
+        await _require_course_owner(video.course_id, current_user)
+
+    filename = file.filename or ""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_SUBTITLE_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail=f"不支持的文件类型: {ext}。仅支持 SRT / VTT / JSON",
+        )
+    if file.content_type not in ALLOWED_SUBTITLE_MIME_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"不支持的 MIME 类型: {file.content_type}",
+        )
+
+    temp_path = f"/tmp/{uuid4()}{ext}"
+    total_size = 0
+    try:
+        with open(temp_path, "wb") as f:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > MAX_SUBTITLE_SIZE_BYTES:
+                    raise HTTPException(status_code=413, detail="字幕文件过大，请控制在 2MB 以内")
+                f.write(chunk)
+            if total_size == 0:
+                raise HTTPException(status_code=400, detail="上传文件为空")
+    except HTTPException:
+        _safe_remove(temp_path)
+        raise
+    except Exception as exc:
+        _safe_remove(temp_path)
+        raise HTTPException(status_code=400, detail=f"无法读取字幕文件: {exc}") from exc
+    finally:
+        await file.close()
+
+    try:
+        cues = _parse_subtitle_file(temp_path, ext)
+    except HTTPException:
+        _safe_remove(temp_path)
+        raise
+    except Exception as exc:
+        _safe_remove(temp_path)
+        raise HTTPException(status_code=422, detail=f"字幕解析失败: {exc}") from exc
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Video).where(Video.id == video_id))
+        video = result.scalar_one_or_none()
+        if video is not None:
+            video.transcript_json = cues
+            await session.commit()
+
+    _safe_remove(temp_path)
+    return {"video_id": video_id, "cues": len(cues)}
+
+
+@router.get("/api/videos/{video_id}/subtitles")
+async def get_video_subtitles(video_id: str):
+    """Return the subtitle cues for a video."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Video).where(Video.id == video_id))
+        video = result.scalar_one_or_none()
+        if video is None:
+            raise HTTPException(status_code=404, detail="视频不存在")
+        return {"video_id": video_id, "cues": video.transcript_json or []}
 
 
 @router.post("/api/courses/{course_id}/build-graph")

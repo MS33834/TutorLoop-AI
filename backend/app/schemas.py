@@ -78,6 +78,10 @@ class ChatRequest(BaseModel):
         None, examples=["data:image/png;base64,..."]
     )
     timestamp: Optional[float] = Field(None, examples=[12.5])
+    need_answer: bool = Field(
+        False,
+        description="当学生多次被引导仍无法回答时，直接给出答案而非继续苏格拉底式提问。",
+    )
 
 
 class RoomCreate(BaseModel):

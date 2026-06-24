@@ -94,6 +94,10 @@ def _format_context(ctx: dict) -> str:
             lines.append(f"- {node['name']}：{node.get('description') or '无'}")
     if ctx.get("screenshot_path"):
         lines.append(f"用户截图路径：{ctx['screenshot_path']}")
+    if ctx.get("materials"):
+        lines.append("相关课程资料：")
+        for material in ctx["materials"]:
+            lines.append(f"- {material['title']}（{material['file_type']}）：{material['text']}")
     return "\n".join(lines)
 
 
@@ -127,16 +131,31 @@ async def _sse_event_stream(request: ChatRequest, user_id: str | None, course_id
         # True, because it must survive until the VLM request completes.
         # It is deleted after streaming finishes (or on error) below.
 
-    # Wrap the user messages with a Socratic system prompt adapted to the
-    # student's current mastery on the relevant knowledge node.
-    socratic_messages = await build_socratic_messages(
-        messages=messages,
-        user_id=user_id,
-        course_id=course_id,
-        node_id=node_id,
-        context_text=context_text,
-        node_name=node_name,
-    )
+    if request.need_answer:
+        # Fallback mode: give a direct, concise answer instead of continuing the
+        # Socratic dialogue. This prevents students from getting stuck after
+        # multiple failed attempts.
+        direct_system_prompt = (
+            "你是一位耐心的辅导老师。学生已经尝试过思考但仍无法理解，"
+            "请直接给出清晰、完整的答案，并附上关键步骤或原理说明。"
+        )
+        if context_text:
+            direct_system_prompt = f"{direct_system_prompt}\n\n{context_text}"
+        socratic_messages = [
+            {"role": "system", "content": direct_system_prompt},
+            *messages,
+        ]
+    else:
+        # Wrap the user messages with a Socratic system prompt adapted to the
+        # student's current mastery on the relevant knowledge node.
+        socratic_messages = await build_socratic_messages(
+            messages=messages,
+            user_id=user_id,
+            course_id=course_id,
+            node_id=node_id,
+            context_text=context_text,
+            node_name=node_name,
+        )
 
     # When a screenshot is present, route to the vision model and attach the
     # screenshot as an image content block on the latest user message so the

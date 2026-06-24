@@ -41,6 +41,9 @@ const recommendation = ref(null)
 const masteryError = ref('')
 const recError = ref('')
 
+const subtitles = ref([])
+const subtitleError = ref('')
+
 const watchSeconds = ref(0)
 const lastTickAt = ref(null)
 
@@ -49,6 +52,12 @@ const showNodePicker = ref(false)
 const selectedNodeId = ref('')
 const pendingFeedbackCorrect = ref(false)
 const feedbackLoading = ref(false)
+
+const showNodeDetail = ref(false)
+const currentNode = ref(null)
+const nodeInteractions = ref([])
+const nodeDetailLoading = ref(false)
+const nodeDetailError = ref('')
 
 const requirePassword = ref(false)
 const requiresLogin = ref(false)
@@ -84,11 +93,6 @@ watch(() => props.slug, (newSlug, oldSlug) => {
     chat.setRoom(newSlug)
   }
   loadCourse()
-})
-
-watch(currentVideo, () => {
-  watchSeconds.value = 0
-  lastTickAt.value = null
 })
 
 function cancelStream() {
@@ -293,6 +297,40 @@ const recommendedNodeId = computed(() => {
   return recommendation.value?.node_id || recommendation.value?.node || null
 })
 
+const subtitleKeywords = computed(() => {
+  const text = input.value?.trim() || chat.messages[lastUserIndex.value]?.content || ''
+  if (!text) return []
+  const words = []
+  const english = text.match(/[a-zA-Z]{3,}/g) || []
+  words.push(...english)
+  const chinese = text.match(/[\u4e00-\u9fa5]{2,}/g) || []
+  words.push(...chinese)
+  const nodeNames = (masteryItems.value || []).map((i) => i.name).filter(Boolean)
+  words.push(...nodeNames)
+  return [...new Set(words)].slice(0, 10)
+})
+
+async function loadSubtitles(videoId) {
+  if (!videoId) {
+    subtitles.value = []
+    return
+  }
+  subtitleError.value = ''
+  try {
+    const data = await apiFetch(`/api/videos/${encodeURIComponent(videoId)}/subtitles`)
+    subtitles.value = Array.isArray(data?.cues) ? data.cues : []
+  } catch (err) {
+    subtitleError.value = err.message || '字幕加载失败'
+    subtitles.value = []
+  }
+}
+
+watch(currentVideo, () => {
+  watchSeconds.value = 0
+  lastTickAt.value = null
+  loadSubtitles(currentVideo.value?.id)
+})
+
 async function sendFeedback(isCorrect) {
   if (feedbackLoading.value) return
 
@@ -343,7 +381,39 @@ function confirmNodeForFeedback() {
   sendFeedback(pendingFeedbackCorrect.value)
 }
 
-async function send() {
+function handleNodeClick(node) {
+  currentNode.value = node
+  showNodeDetail.value = true
+  nodeDetailError.value = ''
+  nodeInteractions.value = []
+  if (user.isLoggedIn && courseId.value) {
+    loadNodeInteractions(node)
+  }
+}
+
+async function loadNodeInteractions(node) {
+  nodeDetailLoading.value = true
+  try {
+    const nodeId = node.node_id || node.name
+    const data = await apiFetch(
+      `/api/users/me/interactions?course_id=${encodeURIComponent(courseId.value)}&node_id=${encodeURIComponent(nodeId)}&limit=20`
+    )
+    nodeInteractions.value = Array.isArray(data) ? data : []
+  } catch (err) {
+    nodeDetailError.value = err.message || '交互记录加载失败'
+  } finally {
+    nodeDetailLoading.value = false
+  }
+}
+
+function closeNodeDetail() {
+  showNodeDetail.value = false
+  currentNode.value = null
+  nodeInteractions.value = []
+  nodeDetailError.value = ''
+}
+
+async function send(needAnswer = false) {
   const text = input.value.trim()
   if ((!text && !screenshot.value) || loading.value) return
 
@@ -371,11 +441,17 @@ async function send() {
       messages: history,
       room_slug: props.slug,
       timestamp: currentTime.value,
-      video_id: currentVideo.value?.id || null
+      video_id: currentVideo.value?.id || null,
+      need_answer: needAnswer
     }
 
     if (screenshot.value) {
       body.screenshot = screenshot.value
+    }
+
+    if (needAnswer) {
+      // 用户明确选择直接看答案，此时在聊天记录中追加系统提示占位。
+      chat.updateLastAssistantContent('（已切换为直接解答模式）')
     }
 
     // 尝试发起流式请求；遇到 401 时先尝试静默刷新令牌再重试一次。
@@ -469,6 +545,12 @@ async function send() {
   }
 }
 
+function formatDate(value) {
+  if (!value) return '未知'
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? '未知' : d.toLocaleString()
+}
+
 function onKeydown(e) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
@@ -510,6 +592,8 @@ function onKeydown(e) {
             ref="videoPlayerRef"
             :src="currentVideo.video_url || currentVideo.url"
             :poster="currentVideo.poster_url || ''"
+            :subtitles="subtitles"
+            :highlight-words="subtitleKeywords"
             @screenshot="onScreenshot"
             @timeupdate="onTimeUpdate"
           />
@@ -529,7 +613,7 @@ function onKeydown(e) {
 
       <div class="chat-section">
         <div class="learner-panel">
-          <MasteryRadar :items="masteryItems" />
+          <MasteryRadar :items="masteryItems" @node-click="handleNodeClick" />
           <RecommendCard
             :recommendation="recommendation"
             @jump="onSeek"
@@ -586,6 +670,14 @@ function onKeydown(e) {
             >
               ❌ 还不懂
             </button>
+            <button
+              class="feedback-btn answer"
+              type="button"
+              :disabled="feedbackLoading || loading"
+              @click="send(true)"
+            >
+              📖 我要看答案
+            </button>
           </div>
 
           <div v-if="showNodePicker" class="node-picker">
@@ -627,6 +719,47 @@ function onKeydown(e) {
           >
             {{ loading ? '…' : '提问' }}
           </button>
+        </div>
+
+        <div v-if="showNodeDetail" class="node-detail-modal" @click.self="closeNodeDetail">
+          <div class="node-detail-card">
+            <div class="node-detail-header">
+              <h3 class="node-detail-title">{{ currentNode?.name }}</h3>
+              <button class="node-detail-close" type="button" @click="closeNodeDetail">×</button>
+            </div>
+
+            <div class="node-detail-body">
+              <p class="node-detail-desc">{{ currentNode?.description || '暂无描述' }}</p>
+
+              <div class="node-detail-stats">
+                <div class="stat">
+                  <span class="stat-label">掌握度</span>
+                  <span class="stat-value" :class="{ weak: (currentNode?.pKnownPercent || 0) < (currentNode?.thresholdPercent || 0) }">
+                    {{ currentNode?.pKnownPercent ?? 0 }}%
+                  </span>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">阈值</span>
+                  <span class="stat-value">{{ currentNode?.thresholdPercent ?? 0 }}%</span>
+                </div>
+              </div>
+
+              <div class="node-interactions">
+                <h4 class="interactions-title">最近交互记录</h4>
+                <div v-if="nodeDetailLoading" class="interactions-status">加载中…</div>
+                <div v-else-if="nodeDetailError" class="interactions-status error">{{ nodeDetailError }}</div>
+                <ul v-else-if="nodeInteractions.length" class="interactions-list">
+                  <li v-for="record in nodeInteractions" :key="record.id" class="interaction-item">
+                    <span class="interaction-time">{{ formatDate(record.created_at) }}</span>
+                    <span class="interaction-result" :class="{ correct: record.is_correct === true, wrong: record.is_correct === false }">
+                      {{ record.is_correct === true ? '正确' : record.is_correct === false ? '错误' : '观看/提问' }}
+                    </span>
+                  </li>
+                </ul>
+                <p v-else class="interactions-empty">该知识点暂无交互记录</p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </template>
@@ -879,6 +1012,12 @@ function onKeydown(e) {
   color: #b91c1c;
 }
 
+.feedback-btn.answer {
+  color: #2563eb;
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
 .feedback-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
@@ -1042,5 +1181,164 @@ function onKeydown(e) {
   font-size: 0.875rem;
   color: #4b5563;
   line-height: 1.5;
+}
+
+.node-detail-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.node-detail-card {
+  width: 100%;
+  max-width: 24rem;
+  max-height: 80vh;
+  background: #ffffff;
+  border-radius: 0.75rem;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.node-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.node-detail-title {
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.node-detail-close {
+  width: 1.75rem;
+  height: 1.75rem;
+  border: none;
+  border-radius: 50%;
+  background: #f3f4f6;
+  color: #4b5563;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.node-detail-body {
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.node-detail-desc {
+  margin: 0 0 0.75rem;
+  font-size: 0.9375rem;
+  color: #4b5563;
+  line-height: 1.5;
+}
+
+.node-detail-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.node-detail-stats .stat {
+  padding: 0.625rem;
+  background: #f9fafb;
+  border-radius: 0.5rem;
+  text-align: center;
+}
+
+.stat-label {
+  display: block;
+  font-size: 0.75rem;
+  color: #6b7280;
+  margin-bottom: 0.25rem;
+}
+
+.stat-value {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #2563eb;
+}
+
+.stat-value.weak {
+  color: #ef4444;
+}
+
+.node-interactions {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 0.75rem;
+}
+
+.interactions-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.interactions-status {
+  font-size: 0.875rem;
+  color: #6b7280;
+  text-align: center;
+  padding: 0.5rem 0;
+}
+
+.interactions-status.error {
+  color: #b91c1c;
+  background: #fee2e2;
+  border-radius: 0.375rem;
+}
+
+.interactions-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.interaction-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.625rem;
+  background: #f9fafb;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+}
+
+.interaction-time {
+  color: #374151;
+}
+
+.interaction-result {
+  font-weight: 500;
+  color: #6b7280;
+}
+
+.interaction-result.correct {
+  color: #047857;
+}
+
+.interaction-result.wrong {
+  color: #b91c1c;
+}
+
+.interactions-empty {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #6b7280;
+  text-align: center;
+  padding: 0.5rem 0;
 }
 </style>

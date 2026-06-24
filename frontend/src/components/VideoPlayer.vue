@@ -3,7 +3,9 @@ import { ref, computed, watch, onBeforeUnmount } from 'vue'
 
 const props = defineProps({
   src: { type: String, default: '' },
-  poster: { type: String, default: '' }
+  poster: { type: String, default: '' },
+  subtitles: { type: Array, default: () => [] },
+  highlightWords: { type: Array, default: () => [] }
 })
 
 const emit = defineEmits(['screenshot', 'timeupdate'])
@@ -14,7 +16,11 @@ const currentTime = ref(0)
 const duration = ref(0)
 const buffered = ref(0)
 const showControls = ref(true)
+const playbackRate = ref(1)
+const showSubtitles = ref(true)
 let controlsTimer = null
+
+const PLAYBACK_RATES = [0.5, 1, 1.25, 1.5, 2]
 
 const formattedCurrentTime = computed(() => formatTime(currentTime.value))
 const formattedDuration = computed(() => formatTime(duration.value))
@@ -26,6 +32,29 @@ const bufferedPercent = computed(() => {
   if (!duration.value) return 0
   return (buffered.value / duration.value) * 100
 })
+
+const currentSubtitle = computed(() => {
+  if (!props.subtitles?.length) return null
+  const t = currentTime.value
+  return props.subtitles.find((cue) => cue.start <= t && cue.end >= t) || null
+})
+
+const cleanedHighlightWords = computed(() => {
+  return (props.highlightWords || [])
+    .map((w) => (typeof w === 'string' ? w.trim() : ''))
+    .filter(Boolean)
+})
+
+function highlightedSubtitle(text) {
+  if (!text || !cleanedHighlightWords.value.length) return text
+  let html = text
+  for (const word of cleanedHighlightWords.value) {
+    const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const pattern = new RegExp(`(${escaped})`, 'gi')
+    html = html.replace(pattern, '<mark>$1</mark>')
+  }
+  return html
+}
 
 function formatTime(seconds) {
   if (!isFinite(seconds)) return '0:00'
@@ -41,6 +70,19 @@ function togglePlay() {
   } else {
     video.value.pause()
   }
+}
+
+function cyclePlaybackRate() {
+  if (!video.value) return
+  const current = playbackRate.value
+  const idx = PLAYBACK_RATES.indexOf(current)
+  const next = PLAYBACK_RATES[(idx + 1) % PLAYBACK_RATES.length]
+  video.value.playbackRate = next
+  playbackRate.value = next
+}
+
+function toggleSubtitles() {
+  showSubtitles.value = !showSubtitles.value
 }
 
 function onPlay() {
@@ -121,6 +163,7 @@ watch(() => props.src, () => {
   currentTime.value = 0
   duration.value = 0
   buffered.value = 0
+  playbackRate.value = 1
 })
 
 onBeforeUnmount(() => {
@@ -149,6 +192,12 @@ defineExpose({
       @click.stop="togglePlay"
     />
 
+    <div
+      v-if="currentSubtitle && showSubtitles"
+      class="subtitle-track"
+      v-html="highlightedSubtitle(currentSubtitle.text)"
+    />
+
     <div class="controls" :class="{ visible: showControls }">
       <div class="progress-bar" @click.stop="seek">
         <div class="buffered" :style="{ width: `${bufferedPercent}%` }" />
@@ -162,6 +211,26 @@ defineExpose({
         </button>
 
         <span class="time">{{ formattedCurrentTime }} / {{ formattedDuration }}</span>
+
+        <button
+          class="control-btn rate-btn"
+          type="button"
+          title="切换播放倍速"
+          @click.stop="cyclePlaybackRate"
+        >
+          {{ playbackRate }}x
+        </button>
+
+        <button
+          v-if="subtitles?.length"
+          class="control-btn subtitle-btn"
+          type="button"
+          title="切换字幕"
+          :class="{ active: showSubtitles }"
+          @click.stop="toggleSubtitles"
+        >
+          CC
+        </button>
 
         <button class="control-btn screenshot-btn" type="button" title="截图提问" @click.stop="takeScreenshot">
           📷
@@ -275,8 +344,50 @@ defineExpose({
   backdrop-filter: blur(4px);
 }
 
+.rate-btn {
+  width: auto;
+  min-width: 2.75rem;
+  padding: 0 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
 .screenshot-btn {
   margin-left: auto;
+}
+
+.subtitle-btn {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.subtitle-btn.active {
+  background: #2563eb;
+}
+
+.subtitle-track {
+  position: absolute;
+  left: 50%;
+  bottom: 5rem;
+  transform: translateX(-50%);
+  max-width: 90%;
+  padding: 0.5rem 1rem;
+  background: rgba(0, 0, 0, 0.75);
+  color: #ffffff;
+  font-size: 1rem;
+  line-height: 1.5;
+  text-align: center;
+  border-radius: 0.5rem;
+  pointer-events: none;
+}
+
+.subtitle-track :deep(mark) {
+  background: #facc15;
+  color: #1a1a1a;
+  border-radius: 0.25rem;
+  padding: 0 0.125rem;
 }
 
 .time {

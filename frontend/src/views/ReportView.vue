@@ -4,6 +4,19 @@ import { useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user.js'
 import { apiFetch } from '../api/client.js'
 import MasteryRadar from '../components/MasteryRadar.vue'
+import { Line } from 'vue-chartjs'
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend
+} from 'chart.js'
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
 
 const props = defineProps({
   courseId: { type: String, required: true }
@@ -14,6 +27,9 @@ const user = useUserStore()
 const loading = ref(false)
 const error = ref('')
 const report = ref(null)
+const timeline = ref(null)
+const timelineLoading = ref(false)
+const timelineError = ref('')
 
 onMounted(() => {
   loadReport()
@@ -41,15 +57,32 @@ async function loadReport() {
   loading.value = true
   error.value = ''
   try {
-    const data = await apiFetch(
-      `/api/users/me/report?course_id=${encodeURIComponent(props.courseId)}`
-    )
+    const [data, tl] = await Promise.all([
+      apiFetch(`/api/users/me/report?course_id=${encodeURIComponent(props.courseId)}`),
+      loadTimeline()
+    ])
     report.value = data
   } catch (err) {
     error.value = err.message || '报告暂时无法加载，稍后再来看看'
     report.value = null
   } finally {
     loading.value = false
+  }
+}
+
+async function loadTimeline() {
+  timelineLoading.value = true
+  timelineError.value = ''
+  try {
+    const data = await apiFetch(
+      `/api/users/me/timeline?course_id=${encodeURIComponent(props.courseId)}&days=30`
+    )
+    timeline.value = data
+  } catch (err) {
+    timelineError.value = err.message || '时序数据加载失败'
+    timeline.value = null
+  } finally {
+    timelineLoading.value = false
   }
 }
 
@@ -69,6 +102,13 @@ function formatDate(value) {
   if (!value) return '未知'
   const d = new Date(value)
   return Number.isNaN(d.getTime()) ? '未知' : d.toLocaleString()
+}
+
+function formatShortDate(value) {
+  if (!value) return ''
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return ''
+  return `${d.getMonth() + 1}/${d.getDate()}`
 }
 
 const masteredItems = computed(() => {
@@ -121,6 +161,60 @@ const nextActions = computed(() => {
 function goToRoom() {
   if (report.value?.course_id) {
     router.push(`/room/${report.value.course_id}`)
+  }
+}
+
+const heatmapData = computed(() => {
+  if (!timeline.value?.daily_activity) return []
+  return timeline.value.daily_activity
+})
+
+const heatmapMax = computed(() => {
+  if (!heatmapData.value.length) return 1
+  return Math.max(1, ...heatmapData.value.map((d) => d.count || 0))
+})
+
+function heatmapColor(count) {
+  const ratio = Math.min(count / heatmapMax.value, 1)
+  const alpha = 0.15 + ratio * 0.85
+  return `rgba(37, 99, 235, ${alpha})`
+}
+
+const masteryChartData = computed(() => {
+  const items = timeline.value?.mastery_curve || report.value?.mastery_items || []
+  if (!items.length) return null
+  const labels = items.map((i) => i.name)
+  return {
+    labels,
+    datasets: [
+      {
+        label: '掌握度',
+        data: items.map((i) => normalizePercent(i.p_known)),
+        borderColor: '#2563eb',
+        backgroundColor: 'rgba(37, 99, 235, 0.2)',
+        tension: 0.3,
+        fill: true
+      },
+      {
+        label: '阈值',
+        data: items.map((i) => normalizePercent(i.threshold)),
+        borderColor: '#ef4444',
+        borderDash: [6, 4],
+        tension: 0.3,
+        fill: false
+      }
+    ]
+  }
+})
+
+const masteryChartOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { position: 'bottom' }
+  },
+  scales: {
+    y: { min: 0, max: 100 }
   }
 }
 
@@ -188,6 +282,33 @@ function exportReport() {
             <p class="value">{{ report.summary?.total_help_count ?? 0 }}</p>
           </div>
         </div>
+      </section>
+
+      <section class="section">
+        <h2 class="section-title">学习活跃度（近 30 天）</h2>
+        <div v-if="timelineLoading" class="timeline-loading">加载时序数据…</div>
+        <div v-else-if="timelineError" class="timeline-error">{{ timelineError }}</div>
+        <div v-else-if="heatmapData.length" class="heatmap">
+          <div
+            v-for="day in heatmapData"
+            :key="day.date"
+            class="heatmap-cell"
+            :style="{ background: heatmapColor(day.count) }"
+            :title="`${day.date}：${day.count} 次交互，观看 ${Math.round(day.watch_minutes)} 分钟`"
+          >
+            <span class="heatmap-date">{{ formatShortDate(day.date) }}</span>
+            <span class="heatmap-count">{{ day.count }}</span>
+          </div>
+        </div>
+        <p v-else class="empty">暂无活跃度数据</p>
+      </section>
+
+      <section class="section">
+        <h2 class="section-title">掌握度曲线</h2>
+        <div v-if="masteryChartData" class="mastery-chart-wrapper">
+          <Line :data="masteryChartData" :options="masteryChartOptions" />
+        </div>
+        <p v-else class="empty">暂无掌握度曲线数据</p>
       </section>
 
       <section class="section">
@@ -603,5 +724,51 @@ function exportReport() {
 
 .tip-text {
   flex: 1;
+}
+
+.timeline-loading,
+.timeline-error {
+  padding: 1rem;
+  text-align: center;
+  font-size: 0.9375rem;
+  color: var(--tl-text-muted);
+}
+
+.timeline-error {
+  color: #b91c1c;
+  background: #fee2e2;
+  border-radius: var(--tl-radius);
+}
+
+.heatmap {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(2.25rem, 1fr));
+  gap: 0.375rem;
+}
+
+.heatmap-cell {
+  aspect-ratio: 1;
+  border-radius: 0.375rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6875rem;
+  color: #1f2937;
+  min-height: 2.25rem;
+}
+
+.heatmap-date {
+  font-size: 0.625rem;
+  opacity: 0.8;
+}
+
+.heatmap-count {
+  font-weight: 600;
+}
+
+.mastery-chart-wrapper {
+  position: relative;
+  height: 16rem;
 }
 </style>

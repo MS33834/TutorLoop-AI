@@ -20,7 +20,10 @@ const props = defineProps({
   }
 })
 
+const emit = defineEmits(['node-click'])
+
 const chartError = ref(false)
+const chartRef = ref(null)
 
 onErrorCaptured((err) => {
   // eslint-disable-next-line no-console
@@ -98,9 +101,21 @@ const chartData = computed(() => {
   }
 })
 
+function handleChartClick(event, elements, chart) {
+  if (!elements?.length) return
+  const index = elements[0].index
+  const item = displayItems.value[index]
+  if (item) emit('node-click', item)
+}
+
+function handleItemClick(item) {
+  emit('node-click', item)
+}
+
 const chartOptions = computed(() => ({
   responsive: true,
   maintainAspectRatio: false,
+  onClick: handleChartClick,
   plugins: {
     legend: {
       position: 'bottom',
@@ -145,7 +160,12 @@ const chartOptions = computed(() => ({
     <div v-else-if="chartError" class="fallback-list">
       <p class="fallback-hint">图表暂时无法显示，已为你切换为文字列表</p>
       <ul>
-        <li v-for="item in displayItems" :key="item._key">
+        <li
+          v-for="item in displayItems"
+          :key="item._key"
+          class="clickable"
+          @click="handleItemClick(item)"
+        >
           <span class="name">{{ item.name }}</span>
           <span class="value" :class="{ weak: item.pKnownPercent < item.thresholdPercent }">
             {{ item.pKnownPercent }}% / 阈值 {{ item.thresholdPercent }}%
@@ -155,7 +175,7 @@ const chartOptions = computed(() => ({
     </div>
 
     <div v-else class="chart-wrapper" role="img" aria-label="掌握度雷达图">
-      <Radar :data="chartData" :options="chartOptions" />
+      <Radar ref="chartRef" :data="chartData" :options="chartOptions" />
     </div>
   </div>
 </template>
@@ -198,6 +218,14 @@ const chartOptions = computed(() => ({
   align-items: center;
   padding: 0.375rem 0;
   border-bottom: 1px solid #f3f4f6;
+}
+
+.fallback-list li.clickable {
+  cursor: pointer;
+}
+
+.fallback-list li.clickable:hover {
+  background: #f9fafb;
 }
 
 .fallback-list li:last-child {
