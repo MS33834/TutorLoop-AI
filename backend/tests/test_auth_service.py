@@ -11,15 +11,23 @@ working passlib scheme so the hash/verify round-trip logic is still exercised.
 In an environment with a compatible bcrypt, the real backend is used as-is.
 """
 
+from datetime import UTC, datetime
+
 import jwt
 import pytest
+from fastapi import HTTPException
 from passlib.context import CryptContext
 
 from app.config import settings
 from app.services import auth_service
 from app.services.auth_service import (
+    ACCESS_TOKEN_TYPE,
     ALGORITHM,
+    REFRESH_TOKEN_TYPE,
     create_access_token,
+    create_refresh_token,
+    decode_access_token,
+    decode_refresh_token,
     get_password_hash,
     verify_password,
 )
@@ -117,3 +125,99 @@ def test_create_access_token_does_not_mutate_input_data():
     data = {"sub": "user-123"}
     create_access_token(data)
     assert data == {"sub": "user-123"}  # original dict untouched (no "exp" added)
+
+
+# ---------------------------------------------------------------------------
+# Refresh token tests
+# ---------------------------------------------------------------------------
+
+
+def test_create_refresh_token_returns_valid_jwt_string():
+    token = create_refresh_token({"sub": "user-123"})
+    assert isinstance(token, str)
+    assert token.count(".") == 2
+
+
+def test_create_refresh_token_contains_type_claim():
+    token = create_refresh_token({"sub": "user-123"})
+    payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
+    assert payload.get("type") == REFRESH_TOKEN_TYPE
+
+
+def test_create_refresh_token_contains_subject():
+    user_id = "user-refresh-abc"
+    token = create_refresh_token({"sub": user_id})
+    payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
+    assert payload["sub"] == user_id
+
+
+def test_create_refresh_token_has_longer_expiry_than_access():
+    """Refresh token expiry (30 days) must outlive the access token expiry."""
+    access = create_access_token({"sub": "u1"})
+    refresh = create_refresh_token({"sub": "u1"})
+    access_payload = jwt.decode(access, settings.secret_key, algorithms=[ALGORITHM])
+    refresh_payload = jwt.decode(refresh, settings.secret_key, algorithms=[ALGORITHM])
+    assert refresh_payload["exp"] > access_payload["exp"]
+
+
+def test_create_refresh_token_does_not_mutate_input_data():
+    data = {"sub": "user-123"}
+    create_refresh_token(data)
+    assert data == {"sub": "user-123"}
+
+
+def test_decode_access_token_rejects_refresh_token():
+    """An access-token decoder must reject a refresh token (type mismatch)."""
+    refresh = create_refresh_token({"sub": "user-123"})
+    with pytest.raises(HTTPException) as exc_info:
+        decode_access_token(refresh)
+    assert exc_info.value.status_code == 401
+
+
+def test_decode_refresh_token_rejects_access_token():
+    """A refresh-token decoder must reject an access token (type mismatch)."""
+    access = create_access_token({"sub": "user-123"})
+    with pytest.raises(HTTPException) as exc_info:
+        decode_refresh_token(access)
+    assert exc_info.value.status_code == 401
+
+
+def test_decode_access_token_returns_payload_for_valid_access_token():
+    token = create_access_token({"sub": "user-xyz"})
+    payload = decode_access_token(token)
+    assert payload["sub"] == "user-xyz"
+    assert payload["type"] == ACCESS_TOKEN_TYPE
+
+
+def test_decode_refresh_token_returns_payload_for_valid_refresh_token():
+    token = create_refresh_token({"sub": "user-xyz"})
+    payload = decode_refresh_token(token)
+    assert payload["sub"] == "user-xyz"
+    assert payload["type"] == REFRESH_TOKEN_TYPE
+
+
+def test_decode_access_token_rejects_garbage_string():
+    with pytest.raises(HTTPException) as exc_info:
+        decode_access_token("not.a.jwt")
+    assert exc_info.value.status_code == 401
+
+
+def test_decode_refresh_token_rejects_expired_token():
+    from datetime import timedelta
+
+    # Manually craft an expired refresh token.
+    import jwt as _jwt
+
+    from app.services.auth_service import REFRESH_TOKEN_EXPIRE_DAYS
+
+    now = datetime.now(UTC)
+    payload = {
+        "sub": "user-123",
+        "exp": now - timedelta(seconds=1),
+        "iat": now - timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        "type": REFRESH_TOKEN_TYPE,
+    }
+    expired = _jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
+    with pytest.raises(HTTPException) as exc_info:
+        decode_refresh_token(expired)
+    assert exc_info.value.status_code == 401

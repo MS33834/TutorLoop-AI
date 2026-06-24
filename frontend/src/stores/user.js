@@ -4,11 +4,20 @@ import { apiFetch } from '../api/client.js'
 
 const USER_KEY = 'tutorloop_user'
 const TOKEN_KEY = 'tutorloop_token'
+const REFRESH_TOKEN_KEY = 'tutorloop_refresh_token'
 
 function loadJson(key, fallback) {
   try {
     const raw = localStorage.getItem(key)
     return raw ? JSON.parse(raw) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function loadStr(key, fallback = '') {
+  try {
+    return localStorage.getItem(key) || fallback
   } catch {
     return fallback
   }
@@ -39,16 +48,22 @@ function isTokenExpired(token) {
   return payload.exp * 1000 <= Date.now() + 30000
 }
 
+// Singleton promise to avoid concurrent refresh calls.
+let _refreshPromise = null
+
 export const useUserStore = defineStore('user', () => {
-  const token = ref(loadJson(TOKEN_KEY, ''))
+  const token = ref(loadStr(TOKEN_KEY))
+  const refreshToken = ref(loadStr(REFRESH_TOKEN_KEY))
   const user = ref(loadJson(USER_KEY, null))
   const isLoggedIn = computed(() => Boolean(token.value && user.value?.id && !isTokenExpired(token.value)))
 
-  function setAuth(newToken, newUser) {
+  function setAuth(newToken, newRefreshToken, newUser) {
     token.value = newToken
+    refreshToken.value = newRefreshToken
     user.value = newUser
     try {
-      localStorage.setItem(TOKEN_KEY, JSON.stringify(newToken))
+      localStorage.setItem(TOKEN_KEY, newToken)
+      localStorage.setItem(REFRESH_TOKEN_KEY, newRefreshToken)
       localStorage.setItem(USER_KEY, JSON.stringify(newUser))
     } catch {
       // ignore
@@ -57,21 +72,77 @@ export const useUserStore = defineStore('user', () => {
 
   function clearAuth() {
     token.value = ''
+    refreshToken.value = ''
     user.value = null
     try {
       localStorage.removeItem(TOKEN_KEY)
+      localStorage.removeItem(REFRESH_TOKEN_KEY)
       localStorage.removeItem(USER_KEY)
     } catch {
       // ignore
     }
+    _refreshPromise = null
+  }
+
+  /**
+   * Silently refresh the access token using the stored refresh token.
+   * Returns the new access token, or null if refresh failed.
+   * Concurrent calls share the same promise to avoid duplicate requests.
+   */
+  async function refreshAccessToken() {
+    if (!refreshToken.value) return null
+    // Reuse an in-flight refresh to avoid duplicate calls.
+    if (_refreshPromise) return _refreshPromise
+
+    _refreshPromise = (async () => {
+      try {
+        const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+        const res = await fetch(`${API_BASE}/api/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken.value })
+        })
+        if (!res.ok) {
+          // Refresh token invalid/expired — log out.
+          clearAuth()
+          return null
+        }
+        const data = await res.json()
+        token.value = data.access_token
+        refreshToken.value = data.refresh_token
+        try {
+          localStorage.setItem(TOKEN_KEY, data.access_token)
+          localStorage.setItem(REFRESH_TOKEN_KEY, data.refresh_token)
+        } catch {
+          // ignore
+        }
+        return data.access_token
+      } catch {
+        // Network error — don't clear auth, just fail this refresh.
+        return null
+      } finally {
+        _refreshPromise = null
+      }
+    })()
+
+    return _refreshPromise
   }
 
   async function fetchProfile() {
     if (!token.value) return
-    // Don't attempt to fetch if the token is already expired.
+    // If the access token is expired but we have a refresh token, try to
+    // refresh silently before fetching the profile.
     if (isTokenExpired(token.value)) {
-      clearAuth()
-      return
+      if (refreshToken.value) {
+        const newToken = await refreshAccessToken()
+        if (!newToken) {
+          clearAuth()
+          return
+        }
+      } else {
+        clearAuth()
+        return
+      }
     }
     try {
       const profile = await apiFetch('/api/auth/me')
@@ -102,6 +173,7 @@ export const useUserStore = defineStore('user', () => {
 
   return {
     token,
+    refreshToken,
     user,
     isLoggedIn,
     userId: computed(() => user.value?.id || ''),
@@ -110,6 +182,7 @@ export const useUserStore = defineStore('user', () => {
     isTeacher: computed(() => user.value?.role === 'teacher' || user.value?.role === 'admin'),
     setAuth,
     clearAuth,
-    fetchProfile
+    fetchProfile,
+    refreshAccessToken
   }
 })

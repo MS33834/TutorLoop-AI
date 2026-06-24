@@ -31,7 +31,7 @@ async function submit() {
       method: 'POST',
       body: JSON.stringify(body)
     })
-    userStore.setAuth(data.access_token, data.user)
+    userStore.setAuth(data.access_token, data.refresh_token, data.user)
     router.replace('/')
   } catch (err) {
     error.value = err.message || '操作失败'

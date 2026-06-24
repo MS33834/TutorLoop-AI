@@ -52,6 +52,11 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * Low-level fetch wrapper. On 401 it throws an UNAUTHORIZED error WITHOUT
+ * clearing auth — the caller (_apiFetchWithRetry) is responsible for trying
+ * a token refresh and retrying before giving up.
+ */
 async function rawFetch(url, options, token, timeoutMs) {
   const controller = new AbortController()
   const timeoutId = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null
@@ -66,11 +71,10 @@ async function rawFetch(url, options, token, timeoutMs) {
     if (timeoutId) clearTimeout(timeoutId)
 
     if (response.status === 401) {
-      const userStore = useUserStore()
-      userStore.clearAuth()
       const err = new Error('登录已过期，请重新登录')
       err.code = 'UNAUTHORIZED'
       err.status = 401
+      err._response = response
       throw err
     }
 
@@ -117,27 +121,53 @@ export async function apiFetch(path, options = {}) {
     const existing = _inflightGets.get(url)
     if (existing) return existing
 
-    const promise = _apiFetchWithRetry(url, options, userStore.token, timeoutMs)
+    const promise = _apiFetchWithRetry(url, options, userStore, timeoutMs)
       .finally(() => _inflightGets.delete(url))
     _inflightGets.set(url, promise)
     return promise
   }
 
-  return _apiFetchWithRetry(url, options, userStore.token, timeoutMs)
+  return _apiFetchWithRetry(url, options, userStore, timeoutMs)
 }
 
-async function _apiFetchWithRetry(url, options, token, timeoutMs) {
-  const method = (options.method || 'GET').toUpperCase()
+async function _apiFetchWithRetry(url, options, userStore, timeoutMs) {
   let lastErr = null
+  // Whether we've already attempted a token refresh for this request.
+  // We only refresh once to avoid infinite loops.
+  let refreshed = false
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // Read the latest token from the store on each attempt so that a
+    // refreshed token is picked up after a 401-triggered refresh.
+    const token = userStore.token
     try {
       return await rawFetch(url, options, token, timeoutMs)
     } catch (err) {
       lastErr = err
 
-      // Don't retry on auth errors, aborts, or client-side (4xx) errors.
-      if (err.code === 'UNAUTHORIZED' || err.isAbort || err.code === 'ABORTED') {
+      // On 401, try a silent token refresh once before giving up. If the
+      // refresh succeeds, retry the original request with the new token
+      // instead of logging the user out.
+      if (err.code === 'UNAUTHORIZED') {
+        if (!refreshed && userStore.refreshToken) {
+          refreshed = true
+          const newToken = await userStore.refreshAccessToken()
+          if (newToken) {
+            // Retry immediately without counting against MAX_RETRIES.
+            attempt -= 1
+            continue
+          }
+          // Refresh failed — clear auth and surface the error.
+          userStore.clearAuth()
+        } else {
+          // Already tried refreshing (or no refresh token) — give up.
+          userStore.clearAuth()
+        }
+        throw err
+      }
+
+      // Don't retry on aborts.
+      if (err.isAbort || err.code === 'ABORTED') {
         throw err
       }
 

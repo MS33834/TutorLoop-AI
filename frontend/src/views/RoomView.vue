@@ -378,20 +378,37 @@ async function send() {
       body.screenshot = screenshot.value
     }
 
-    const response = await fetch(`${API_BASE}/api/chat`, {
-      method: 'POST',
-      signal: streamAbortController.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(user.token ? { Authorization: `Bearer ${user.token}` } : {})
-      },
-      body: JSON.stringify(body)
-    })
+    // 尝试发起流式请求；遇到 401 时先尝试静默刷新令牌再重试一次。
+    let response = null
+    let refreshed = false
+    while (true) {
+      response = await fetch(`${API_BASE}/api/chat`, {
+        method: 'POST',
+        signal: streamAbortController.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(user.token ? { Authorization: `Bearer ${user.token}` } : {})
+        },
+        body: JSON.stringify(body)
+      })
 
-    if (response.status === 401) {
-      user.clearAuth()
-      router.push('/login')
-      throw new Error('登录已过期，请重新登录')
+      if (response.status === 401) {
+        // 仅在持有 refresh token 且尚未刷新过时尝试一次静默刷新。
+        if (!refreshed && user.refreshToken) {
+          refreshed = true
+          const newToken = await user.refreshAccessToken()
+          if (newToken) {
+            // 丢弃当前响应，用新令牌重试。
+            try { await response.body?.cancel() } catch { /* ignore */ }
+            continue
+          }
+        }
+        // 刷新失败或已刷新过 —— 清除登录态并跳转。
+        user.clearAuth()
+        router.push('/login')
+        throw new Error('登录已过期，请重新登录')
+      }
+      break
     }
 
     if (!response.ok) {
