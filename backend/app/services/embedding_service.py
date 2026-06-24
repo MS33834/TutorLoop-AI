@@ -3,6 +3,7 @@
 import hashlib
 import logging
 import math
+import threading
 
 from app.config import settings
 
@@ -11,22 +12,27 @@ logger = logging.getLogger(__name__)
 FALLBACK_DIM = 384
 
 _encoder = None
+_encoder_lock = threading.Lock()
 
 
 def _get_encoder():
     global _encoder
     if _encoder is None:
-        try:
-            from sentence_transformers import SentenceTransformer
+        # Guard initialization with a lock so concurrent first calls do not
+        # each load the (heavy) SentenceTransformer model into memory.
+        with _encoder_lock:
+            if _encoder is None:  # double-checked locking
+                try:
+                    from sentence_transformers import SentenceTransformer
 
-            _encoder = SentenceTransformer(settings.embedding_model)
-            logger.info("Loaded embedding model: %s", settings.embedding_model)
-        except Exception as exc:  # pragma: no cover
-            logger.warning(
-                "Could not load sentence-transformers (%s). Using deterministic fallback embeddings.",
-                exc,
-            )
-            _encoder = False
+                    _encoder = SentenceTransformer(settings.embedding_model)
+                    logger.info("Loaded embedding model: %s", settings.embedding_model)
+                except Exception as exc:  # pragma: no cover
+                    logger.warning(
+                        "Could not load sentence-transformers (%s). Using deterministic fallback embeddings.",
+                        exc,
+                    )
+                    _encoder = False
     return _encoder
 
 

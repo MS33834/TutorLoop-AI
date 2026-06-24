@@ -77,25 +77,13 @@ const roomUuid = computed(() => room.value?.id || '')
 
 onMounted(() => {
   chat.setRoom(props.slug)
-  roomSessionId.value = sessionStorage.getItem('room_session_id') || generateUUID()
-  sessionStorage.setItem('room_session_id', roomSessionId.value)
+  // session_id is now server-issued (HMAC-signed) via getRoomBySlug; we no
+  // longer generate a client-side UUID. roomSessionId is populated in
+  // loadCourse() from room.value.session_token.
   // Use sendBeacon on page hide so watch records survive navigation/close.
   window.addEventListener('pagehide', onPageHide)
   loadCourse()
 })
-
-function generateUUID() {
-  try {
-    return crypto.randomUUID()
-  } catch {
-    // Fallback for browsers without crypto.randomUUID (non-HTTPS / older).
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-      const r = (Math.random() * 16) | 0
-      const v = c === 'x' ? r : (r & 0x3) | 0x8
-      return v.toString(16)
-    })
-  }
-}
 
 function onPageHide() {
   sendWatchRecord(true)
@@ -146,6 +134,8 @@ async function loadCourse() {
   requiresLogin.value = false
   try {
     room.value = await getRoomBySlug(props.slug)
+    // Use the server-issued, signed session token for join dedup.
+    roomSessionId.value = room.value.session_token || ''
     if (!room.value.allow_anonymous && !user.isLoggedIn) {
       requiresLogin.value = true
       pageLoading.value = false
@@ -506,6 +496,8 @@ async function send(needAnswer = false) {
       response = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
         signal: streamAbortController.signal,
+        // credentials: 'include' 让 HttpOnly refresh cookie 能被发送/接收。
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           ...(user.token ? { Authorization: `Bearer ${user.token}` } : {})
@@ -514,8 +506,8 @@ async function send(needAnswer = false) {
       })
 
       if (response.status === 401) {
-        // 仅在持有 refresh token 且尚未刷新过时尝试一次静默刷新。
-        if (!refreshed && user.refreshToken) {
+        // 尚未刷新过时尝试一次静默刷新（refresh token 由 HttpOnly cookie 携带）。
+        if (!refreshed) {
           refreshed = true
           const newToken = await user.refreshAccessToken()
           if (newToken) {

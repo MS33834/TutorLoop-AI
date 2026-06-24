@@ -19,7 +19,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.db.neo4j import close_driver, get_driver
 from app.db.postgres import close_db, engine, init_db
-from app.gateway import start_health_probe, stop_health_probe
+from app.gateway import close_local_provider
 from app.limiter import limiter
 from app.routers import auth, chat, courses, rooms, users
 from app.tasks.worker import _redis_settings
@@ -53,18 +53,17 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("Could not connect to Redis task queue: %s", exc)
 
-    # Start periodic AI key health probing so the gateway can recover keys
-    # without waiting for a user request.
-    start_health_probe(interval_seconds=60.0)
+    # AI key health probing is handled by the ARQ worker's cron job
+    # (probe_keys_health_task, every 30s) which shares the same gateway pool.
+    # Running a second probe loop here would duplicate the probes and skew RTT
+    # statistics, so it is intentionally not started in the app process.
 
     yield
 
-    stop_health_probe()
     if redis_pool is not None:
         await redis_pool.close()
     # Close shared httpx clients in the AI gateway key pool and local fallback.
     try:
-        from app.gateway import close_local_provider
         from app.gateway import pool as _gateway_pool
         from app.services.kg_extractor import close_vlm_provider
 

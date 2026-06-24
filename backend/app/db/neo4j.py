@@ -1,5 +1,6 @@
 """Neo4j graph database access."""
 
+import asyncio
 import logging
 
 from neo4j import AsyncDriver, AsyncGraphDatabase
@@ -9,16 +10,26 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _driver: AsyncDriver | None = None
+_driver_lock = asyncio.Lock()
 
 
 async def get_driver() -> AsyncDriver:
     """Return a singleton Neo4j async driver."""
     global _driver
     if _driver is None:
-        _driver = AsyncGraphDatabase.driver(
-            settings.neo4j_uri,
-            auth=(settings.neo4j_user, settings.neo4j_password),
-        )
+        # Guard creation with a lock so concurrent first callers do not each
+        # spin up a separate driver / connection pool.
+        async with _driver_lock:
+            if _driver is None:  # double-checked locking
+                _driver = AsyncGraphDatabase.driver(
+                    settings.neo4j_uri,
+                    auth=(settings.neo4j_user, settings.neo4j_password),
+                    # Explicit pool/timeout tuning so production traffic does not
+                    # exhaust the default pool or hang indefinitely.
+                    connection_pool_size=50,
+                    connection_timeout=30,
+                    max_connection_lifetime=3600,
+                )
     return _driver
 
 
@@ -187,3 +198,23 @@ async def get_prerequisites(node_id: str, course_id: str | None = None) -> list[
             )
 
     return prereqs
+
+
+async def delete_node(course_id: str, node_id: str) -> None:
+    """Delete a KnowledgeNode and its relationships from Neo4j.
+
+    Postgres cascades handle edges/mastery on the SQL side, but Neo4j has no
+    cross-store cascade, so callers must invoke this to keep the graph DB
+    consistent when a knowledge node is deleted.
+    """
+    driver = await get_driver()
+    async with driver.session() as session:
+        # DETACH DELETE removes the node together with all its relationships.
+        await session.run(
+            """
+            MATCH (n:KnowledgeNode {course_id: $course_id, node_id: $node_id})
+            DETACH DELETE n
+            """,
+            course_id=course_id,
+            node_id=node_id,
+        )

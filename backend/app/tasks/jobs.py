@@ -38,7 +38,15 @@ async def process_video_task(
         return {"video_id": video_id, "status": "completed"}
     except Exception as exc:
         logger.exception("Video processing failed for %s: %s", video_id, exc)
-        await _update_video_status(video_id, "failed")
+        # Mark the video as failed, but guard this update so a failure here
+        # (e.g. DB unavailable) does not mask the original processing exception
+        # that ARQ uses to decide retries.
+        try:
+            await _update_video_status(video_id, "failed")
+        except Exception as status_exc:
+            logger.warning(
+                "Could not mark video %s as failed: %s", video_id, status_exc
+            )
         raise
     finally:
         if os.path.exists(temp_path):
@@ -78,7 +86,13 @@ async def build_knowledge_graph_task(
             video_id,
             exc,
         )
-        await _update_video_status(video_id, "kg_failed")
+        # Guard the status update so it cannot mask the original exception.
+        try:
+            await _update_video_status(video_id, "kg_failed")
+        except Exception as status_exc:
+            logger.warning(
+                "Could not mark video %s as kg_failed: %s", video_id, status_exc
+            )
         raise
 
 

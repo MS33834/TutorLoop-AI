@@ -62,8 +62,11 @@ async function rawFetch(url, options, token, timeoutMs) {
   const timeoutId = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null
 
   try {
+    // credentials: 'include' so the HttpOnly refresh-token cookie is sent to
+    // and set by /api/auth/* endpoints (login/register/refresh/logout).
     const response = await fetch(url, {
       ...options,
+      credentials: 'include',
       signal: controller.signal,
       headers: mergeHeaders(options, token)
     })
@@ -147,9 +150,10 @@ async function _apiFetchWithRetry(url, options, userStore, timeoutMs) {
 
       // On 401, try a silent token refresh once before giving up. If the
       // refresh succeeds, retry the original request with the new token
-      // instead of logging the user out.
+      // instead of logging the user out. The refresh token is sent
+      // automatically via the HttpOnly cookie (credentials: 'include').
       if (err.code === 'UNAUTHORIZED') {
-        if (!refreshed && userStore.refreshToken) {
+        if (!refreshed) {
           refreshed = true
           const newToken = await userStore.refreshAccessToken()
           if (newToken) {
@@ -160,7 +164,7 @@ async function _apiFetchWithRetry(url, options, userStore, timeoutMs) {
           // Refresh failed — clear auth and surface the error.
           userStore.clearAuth()
         } else {
-          // Already tried refreshing (or no refresh token) — give up.
+          // Already tried refreshing — give up.
           userStore.clearAuth()
         }
         throw err

@@ -34,8 +34,12 @@ services:
         value: qwen3.5-4b
       - key: UPLOAD_DIR
         value: /app/uploads
+      # SECRET_KEY must be identical across web and worker so JWTs validate in
+      # both. Render's generateValue is per-service, so it would produce two
+      # different keys. Set the same value manually via a shared environment
+      # group / secret instead (sync: false prompts for it on deploy).
       - key: SECRET_KEY
-        generateValue: true
+        sync: false
       - key: RUN_ALEMBIC_MIGRATIONS
         value: "false"
       - key: SENTRY_DSN
@@ -77,8 +81,9 @@ services:
         value: qwen3.5-4b
       - key: UPLOAD_DIR
         value: /app/uploads
+      # SECRET_KEY must match the web service's value (see note above).
       - key: SECRET_KEY
-        generateValue: true
+        sync: false
       - key: RUN_ALEMBIC_MIGRATIONS
         value: "false"
       - key: SENTRY_DSN

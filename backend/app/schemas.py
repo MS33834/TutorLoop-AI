@@ -77,7 +77,12 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(None, examples=["session-uuid"])
     video_id: Optional[str] = Field(None, examples=["video-uuid"])
     screenshot: Optional[str] = Field(
-        None, examples=["data:image/png;base64,..."]
+        None,
+        # Cap at ~3MB of base64 (decodes to ~2MB, matching MAX_SCREENSHOT_BYTES
+        # in chat.py). Without this Pydantic loads the whole string into memory
+        # before the size check runs, allowing memory-exhaustion via huge payloads.
+        max_length=3_000_000,
+        examples=["data:image/png;base64,..."],
     )
     timestamp: Optional[float] = Field(None, examples=[12.5])
     need_answer: bool = Field(
@@ -132,6 +137,9 @@ class RoomPublicResponse(BaseModel):
     allow_anonymous: bool
     is_active: bool
     expires_at: Optional[str]
+    # Server-issued, HMAC-signed session token the client must present when
+    # joining, so it cannot forge session_ids to bypass participant limits.
+    session_token: Optional[str] = None
 
 
 class RoomJoinRequest(BaseModel):

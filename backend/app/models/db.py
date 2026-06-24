@@ -112,6 +112,12 @@ class VideoFrame(Base):
 class KnowledgeNode(Base):
     __tablename__ = "knowledge_nodes"
 
+    __table_args__ = (
+        # Prevent duplicate nodes when build-graph is re-run: the same
+        # (course, name) pair must resolve to a single node.
+        UniqueConstraint("course_id", "name", name="uq_knowledge_node_course_name"),
+    )
+
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
@@ -221,11 +227,25 @@ class Interaction(Base):
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    user_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
-    room_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
-    course_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
-    video_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
-    node_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    # Foreign keys with SET NULL so deleting a user/course/video/node does not
+    # leave dangling interaction rows that silently skew class reports.
+    # user_id stays nullable (anonymous interactions) and is SET NULL on user
+    # deletion rather than CASCADE, preserving historical anonymous-ish data.
+    user_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    room_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("rooms.id", ondelete="SET NULL"), nullable=True
+    )
+    course_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("courses.id", ondelete="SET NULL"), nullable=True
+    )
+    video_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("videos.id", ondelete="SET NULL"), nullable=True
+    )
+    node_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("knowledge_nodes.id", ondelete="SET NULL"), nullable=True
+    )
     video_timestamp: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     screenshot_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     question_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

@@ -14,12 +14,13 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-# Runtime stage
-FROM nginx:1.25-alpine
+# Runtime stage: nginx-unprivileged runs as a non-root user (uid 101) and
+# listens on 8080 by default, so the container does not run as root.
+FROM nginxinc/nginx-unprivileged:1.25-alpine
 
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-EXPOSE 80
+EXPOSE 8080
 
 CMD ["nginx", "-g", "daemon off;"]

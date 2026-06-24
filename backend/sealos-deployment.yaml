@@ -16,7 +16,9 @@ spec:
     spec:
       containers:
         - name: backend
-          image: ghcr.io/your-org/tutorloop-backend:latest
+          # Replace with your registry and a pinned version tag. Avoid :latest
+          # so rollouts are reproducible and can be rolled back precisely.
+          image: ghcr.io/your-org/tutorloop-backend:0.2.0
           ports:
             - containerPort: 8000
           env:
@@ -40,6 +42,36 @@ spec:
                 secretKeyRef:
                   name: tutorloop-secrets
                   key: NEO4J_PASSWORD
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: REDIS_URL
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: SECRET_KEY
+            - name: LLM_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: LLM_API_KEYS
+            - name: LLM_BASE_URLS
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: LLM_BASE_URLS
+            - name: LLM_MODELS
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: LLM_MODELS
+            - name: CORS_ORIGINS
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: CORS_ORIGINS
             - name: SENTRY_DSN
               valueFrom:
                 secretKeyRef:
@@ -47,6 +79,8 @@ spec:
                   key: SENTRY_DSN
             - name: UPLOAD_DIR
               value: /app/uploads
+            - name: RUN_ALEMBIC_MIGRATIONS
+              value: "true"
           resources:
             requests:
               cpu: 100m
@@ -54,6 +88,9 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
           livenessProbe:
             httpGet:
               path: /live
@@ -66,6 +103,10 @@ spec:
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 5
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: tutorloop-uploads
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -85,7 +126,7 @@ spec:
     spec:
       containers:
         - name: worker
-          image: ghcr.io/your-org/tutorloop-backend:latest
+          image: ghcr.io/your-org/tutorloop-backend:0.2.0
           command: ["arq", "app.tasks.worker.WorkerSettings"]
           env:
             - name: DATABASE_URL
@@ -108,6 +149,31 @@ spec:
                 secretKeyRef:
                   name: tutorloop-secrets
                   key: NEO4J_PASSWORD
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: REDIS_URL
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: SECRET_KEY
+            - name: LLM_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: LLM_API_KEYS
+            - name: LLM_BASE_URLS
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: LLM_BASE_URLS
+            - name: LLM_MODELS
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: LLM_MODELS
             - name: SENTRY_DSN
               valueFrom:
                 secretKeyRef:
@@ -133,3 +199,14 @@ spec:
   ports:
     - port: 80
       targetPort: 8000
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tutorloop-uploads
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi

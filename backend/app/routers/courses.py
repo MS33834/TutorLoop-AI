@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
-from app.db.neo4j import get_graph
+from app.db.neo4j import delete_node, get_graph
 from app.db.postgres import AsyncSessionLocal
 from app.limiter import limiter
 from app.models.db import Course, CourseMaterial, KnowledgeEdge, KnowledgeNode, User, Video
@@ -605,6 +605,7 @@ async def delete_course_material(
     current_user: User = Depends(get_current_active_user),  # noqa: B008
 ):
     """Delete a course material and its stored file."""
+    file_path_to_remove: str | None = None
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(CourseMaterial).where(CourseMaterial.id == material_id)
@@ -614,9 +615,17 @@ async def delete_course_material(
             raise HTTPException(status_code=404, detail="资料不存在")
 
         await _require_course_owner(material.course_id, current_user)
-        _safe_remove(material.file_path)
+        # Capture the path before deletion so we can remove the file only after
+        # the DB transaction commits. Deleting the file first would leave an
+        # orphan DB row if the commit fails (e.g. DB connection drop).
+        file_path_to_remove = material.file_path
         await session.delete(material)
         await session.commit()
+
+    # Filesystem cleanup happens after a successful commit so a commit failure
+    # never leaves an orphaned DB record pointing at a deleted file.
+    if file_path_to_remove:
+        _safe_remove(file_path_to_remove)
 
     return {"ok": True}
 
@@ -934,9 +943,18 @@ async def delete_knowledge_node(
             raise HTTPException(status_code=404, detail="知识点不存在")
 
         await _require_course_owner(node.course_id, current_user)
+        course_id = node.course_id
 
         await session.delete(node)
         await session.commit()
+
+    # Postgres CASCADE removed edges and mastery; mirror the deletion in Neo4j
+    # so the graph DB does not keep stale nodes/relationships. Done after the
+    # SQL commit so a Neo4j failure does not roll back the successful delete.
+    try:
+        await delete_node(course_id, node_id)
+    except Exception as exc:
+        logger.warning("Could not delete Neo4j node %s: %s", node_id, exc)
 
     return {"ok": True}
 

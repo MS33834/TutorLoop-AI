@@ -15,8 +15,8 @@ onMounted(() => {
   window.addEventListener('offline', () => { isOnline.value = false })
 })
 
-function logout() {
-  userStore.clearAuth()
+async function logout() {
+  await userStore.logout()
   mobileMenuOpen.value = false
   router.push('/')
 }

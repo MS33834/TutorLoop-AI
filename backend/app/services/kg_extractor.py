@@ -561,6 +561,16 @@ async def extract_knowledge_graph(
     # Persist to Postgres
     node_id_map: dict[str, str] = {}
     async with AsyncSessionLocal() as session:
+        # Look up existing nodes for this course by name so re-running
+        # build-graph updates rather than duplicating (enforced by the
+        # uq_knowledge_node_course_name unique constraint).
+        existing_result = await session.execute(
+            select(KnowledgeNode).where(KnowledgeNode.course_id == course_id)
+        )
+        existing_by_name: dict[str, KnowledgeNode] = {
+            n.name: n for n in existing_result.scalars().all()
+        }
+
         # Keep references to the pending objects so we can read their generated
         # primary keys after flush. ``session.new`` is cleared by flush(), so
         # iterating it post-flush would silently yield nothing.
@@ -572,16 +582,26 @@ async def extract_knowledge_graph(
             threshold = node.get("threshold", 0.8)
             embedding = encode_text(f"{name} {description}".strip())
 
-            db_node = KnowledgeNode(
-                course_id=course_id,
-                name=name,
-                description=description,
-                threshold=threshold,
-                neo4j_id=node_id,
-                embedding=embedding,
-            )
-            session.add(db_node)
-            db_nodes.append(db_node)
+            existing = existing_by_name.get(name)
+            if existing is not None:
+                # Update the existing node in place instead of creating a
+                # duplicate (which would violate the unique constraint).
+                existing.description = description
+                existing.threshold = threshold
+                existing.neo4j_id = node_id
+                existing.embedding = embedding
+                db_nodes.append(existing)
+            else:
+                db_node = KnowledgeNode(
+                    course_id=course_id,
+                    name=name,
+                    description=description,
+                    threshold=threshold,
+                    neo4j_id=node_id,
+                    embedding=embedding,
+                )
+                session.add(db_node)
+                db_nodes.append(db_node)
 
         # Flush to populate generated primary keys before commit so we can
         # build the neo4j_id -> db_id mapping without a second query.

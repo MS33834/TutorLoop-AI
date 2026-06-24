@@ -183,7 +183,11 @@ def _compute_depth(prereq_map: dict[str, set[str]]) -> dict[str, int]:
         if visiting is None:
             visiting = set()
         if node_id in visiting:
-            return 0  # cycle guard
+            # Cycle detected: return 0 but do NOT cache it, otherwise the
+            # cycle's nodes would be permanently stuck at depth 0 and skew
+            # downstream recommendation ordering. Returning 0 just breaks the
+            # recursion for this path.
+            return 0
         visiting.add(node_id)
         prereqs = prereq_map.get(node_id, set())
         max_depth = 1 + max((depth(p, visiting) for p in prereqs), default=0)

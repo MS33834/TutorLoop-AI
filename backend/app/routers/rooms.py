@@ -1,5 +1,7 @@
 """Learning room endpoints for TutorLoop AI."""
 
+import hashlib
+import hmac
 import logging
 import secrets
 from datetime import datetime, timezone
@@ -9,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from app.config import settings
 from app.db.postgres import AsyncSessionLocal
 from app.limiter import limiter
 from app.models.db import Course, Room, RoomEntrySession, User
@@ -35,6 +38,33 @@ MAX_SLUG_RETRIES = 5
 def _generate_slug() -> str:
     """Generate a short URL-safe room slug."""
     return secrets.token_urlsafe(6)[:8]
+
+
+def _sign_session_id(room_id: str, raw_session: str) -> str:
+    """Return an HMAC signature over (room_id, raw_session) using SECRET_KEY.
+
+    The signed session_id format is ``raw_session.signature`` so the server can
+    verify a session_id was issued by it (via get_room) and not fabricated by a
+    client to bypass participant-count deduplication.
+    """
+    mac = hmac.new(
+        settings.secret_key.encode("utf-8"),
+        f"{room_id}:{raw_session}".encode("utf-8"),
+        hashlib.sha256,
+    )
+    return f"{raw_session}.{mac.hex()}"
+
+
+def _verify_session_id(room_id: str, signed_session: str) -> bool:
+    """Verify a server-issued session_id signature. Returns True if valid."""
+    if not signed_session or "." not in signed_session:
+        return False
+    raw_session, _, signature = signed_session.rpartition(".")
+    if not raw_session or not signature:
+        return False
+    expected = _sign_session_id(room_id, raw_session)
+    # Use hmac.compare_digest for constant-time comparison.
+    return hmac.compare_digest(expected, signed_session)
 
 
 def _parse_expires_at(value: str | None) -> datetime | None:
@@ -182,7 +212,12 @@ async def get_room(slug: str, request: Request):
             raise HTTPException(status_code=404, detail="房间不存在或已关闭")
         if room.expires_at and room.expires_at <= datetime.now(timezone.utc):
             raise HTTPException(status_code=410, detail="房间已过期")
-        return _serialize_public_room(room)
+        response = _serialize_public_room(room)
+    # Issue a signed session token so the client can join without being able
+    # to forge arbitrary session_ids to inflate the participant count.
+    raw_session = uuid4().hex
+    response.session_token = _sign_session_id(room.id, raw_session)
+    return response
 
 
 @router.post("/api/rooms/{slug}/join")
@@ -203,6 +238,11 @@ async def join_room(slug: str, body: RoomJoinRequest, request: Request):
 
         should_count = True
         if body.session_id:
+            # Reject client-fabricated session_ids: only tokens signed by this
+            # server (issued via get_room) count for dedup, preventing an
+            # attacker from rotating session_ids to bypass the participant cap.
+            if not _verify_session_id(room.id, body.session_id):
+                raise HTTPException(status_code=400, detail="会话凭据无效")
             existing_result = await session.execute(
                 select(RoomEntrySession).where(
                     RoomEntrySession.room_id == room.id,

@@ -41,30 +41,33 @@ def extract_frames(
         logger.error("Cannot open video: %s", video_path)
         return [], 0.0
 
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    duration = total_frames / fps if fps > 0 else 0.0
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = total_frames / fps if fps > 0 else 0.0
 
-    frames = []
-    frame_interval = int(fps * interval)
-    frame_index = 0
+        frames = []
+        frame_interval = int(fps * interval)
+        frame_index = 0
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        if frame_index % frame_interval == 0:
-            timestamp_seconds = round(frame_index / fps, 2)
-            frames.append({"timestamp_seconds": timestamp_seconds, "frame": frame})
+            if frame_index % frame_interval == 0:
+                timestamp_seconds = round(frame_index / fps, 2)
+                frames.append({"timestamp_seconds": timestamp_seconds, "frame": frame})
 
-        frame_index += 1
+            frame_index += 1
 
-    cap.release()
-
-    # Sort by timestamp so directory listing is deterministic
-    frames.sort(key=lambda x: x["timestamp_seconds"])
-    return frames, duration
+        # Sort by timestamp so directory listing is deterministic
+        frames.sort(key=lambda x: x["timestamp_seconds"])
+        return frames, duration
+    finally:
+        # Always release the VideoCapture, even if read() raises, so the
+        # underlying file descriptor / camera handle is not leaked.
+        cap.release()
 
 
 def extract_and_save_frames(
