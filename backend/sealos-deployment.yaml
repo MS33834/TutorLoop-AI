@@ -67,6 +67,62 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
 ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tutorloop-worker
+  labels:
+    app: tutorloop-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tutorloop-worker
+  template:
+    metadata:
+      labels:
+        app: tutorloop-worker
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/your-org/tutorloop-backend:latest
+          command: ["arq", "app.tasks.worker.WorkerSettings"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: DATABASE_URL
+            - name: NEO4J_URI
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: NEO4J_URI
+            - name: NEO4J_USER
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: NEO4J_USER
+            - name: NEO4J_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: NEO4J_PASSWORD
+            - name: SENTRY_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: SENTRY_DSN
+            - name: UPLOAD_DIR
+              value: /app/uploads
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
 apiVersion: v1
 kind: Service
 metadata:
