@@ -1,6 +1,7 @@
 """Authentication helpers and dependency."""
 
-from datetime import datetime, timedelta, timezone
+import logging
+from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 import jwt
@@ -13,6 +14,7 @@ from app.config import settings
 from app.db.postgres import AsyncSessionLocal
 from app.models.db import User
 
+logger = logging.getLogger(__name__)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer(auto_error=False)
 
@@ -29,10 +31,9 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=settings.access_token_expire_minutes)
-    )
-    to_encode.update({"exp": expire})
+    now = datetime.now(UTC)
+    expire = now + (expires_delta or timedelta(minutes=settings.access_token_expire_minutes))
+    to_encode.update({"exp": expire, "iat": now, "type": "access"})
     return jwt.encode(to_encode, settings.secret_key, algorithm=ALGORITHM)
 
 
@@ -97,12 +98,19 @@ async def get_current_active_user(user: User = Depends(get_current_user)) -> Use
 async def get_optional_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Optional[User]:
-    """Return current user if a valid token is provided, otherwise None."""
+    """Return current user if a valid token is provided, otherwise None.
+
+    Unlike get_current_user, invalid/expired tokens are treated as "no user"
+    rather than raising 401, since this dependency is used on endpoints that
+    accept both authenticated and anonymous access. Token decode failures are
+    logged at debug level for observability without flooding production logs.
+    """
     if not credentials or not credentials.credentials:
         return None
     try:
         payload = _decode_token(credentials.credentials)
-    except HTTPException:
+    except HTTPException as exc:
+        logger.debug("Optional auth token rejected: %s", exc.detail)
         return None
     user_id: Optional[str] = payload.get("sub")
     if not user_id:

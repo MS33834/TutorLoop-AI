@@ -3,6 +3,7 @@
 import logging
 import os
 import threading
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -54,11 +55,13 @@ async def lifespan(app: FastAPI):
 
     if redis_pool is not None:
         await redis_pool.close()
-    # Close shared httpx clients in the AI gateway key pool.
+    # Close shared httpx clients in the AI gateway key pool and local fallback.
     try:
+        from app.gateway import close_local_provider
         from app.gateway import pool as _gateway_pool
 
         await _gateway_pool.close_all()
+        await close_local_provider()
     except Exception as exc:
         logger.warning("Could not close gateway HTTP clients: %s", exc)
     await close_db()
@@ -78,8 +81,24 @@ app.add_middleware(
     allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With", "Accept", "X-Request-ID"],
+    expose_headers=["X-Request-ID"],
 )
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """Attach a unique request ID to every request for tracing and logging.
+
+    Honours an incoming X-Request-ID header (e.g. from an API gateway) when
+    present, otherwise generates a UUID4. The ID is stored on request.state
+    and echoed back in the response header for client-side correlation.
+    """
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 @app.middleware("http")
@@ -107,10 +126,15 @@ app.include_router(users.router)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled exception: %s", exc)
+    request_id = getattr(request.state, "request_id", "unknown")
+    logger.exception("Unhandled exception [request_id=%s]: %s", request_id, exc)
     return JSONResponse(
         status_code=500,
-        content={"detail": "服务暂时开小差了，请稍后重试"},
+        content={
+            "detail": "服务暂时开小差了，请稍后重试",
+            "request_id": request_id,
+        },
+        headers={"X-Request-ID": request_id},
     )
 
 

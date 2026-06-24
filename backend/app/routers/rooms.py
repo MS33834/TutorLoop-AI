@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.db.postgres import AsyncSessionLocal
@@ -219,21 +219,32 @@ async def join_room(slug: str, body: RoomJoinRequest):
 
         if should_count:
             if room.max_participants is not None:
-                current_count = await session.scalar(
-                    select(func.count(RoomEntrySession.id)).where(
-                        RoomEntrySession.room_id == room.id
+                # Atomic check-and-increment: use a conditional UPDATE that
+                # only increments if the current count is below the limit.
+                # This avoids the race between a separate SELECT and UPDATE.
+                result = await session.execute(
+                    Room.__table__.update()
+                    .where(
+                        Room.id == room.id,
+                        Room.entry_count < room.max_participants,
                     )
+                    .values(entry_count=Room.entry_count + 1)
+                    .returning(Room.entry_count)
                 )
-                if (current_count or 0) >= room.max_participants:
+                row = result.first()
+                if row is None:
+                    # No row updated means the condition (entry_count < max)
+                    # was false, i.e. the room is full.
                     raise HTTPException(
                         status_code=429, detail="房间参与人数已达上限"
                     )
-            # Atomic increment to avoid lost updates under concurrency.
-            await session.execute(
-                Room.__table__.update()
-                .where(Room.id == room.id)
-                .values(entry_count=Room.entry_count + 1)
-            )
+            else:
+                # No participant limit; increment unconditionally.
+                await session.execute(
+                    Room.__table__.update()
+                    .where(Room.id == room.id)
+                    .values(entry_count=Room.entry_count + 1)
+                )
         room.last_activity_at = datetime.now(timezone.utc)
         await session.commit()
         await session.refresh(room)

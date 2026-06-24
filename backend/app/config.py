@@ -68,6 +68,27 @@ class Settings(BaseSettings):
     def _strip_whitespace(cls, value: str) -> str:
         return value.strip()
 
+    @field_validator("app_port")
+    @classmethod
+    def _validate_port(cls, value: int) -> int:
+        if not 1 <= value <= 65535:
+            raise ValueError("APP_PORT must be between 1 and 65535")
+        return value
+
+    @field_validator("frame_interval_seconds")
+    @classmethod
+    def _validate_frame_interval(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("FRAME_INTERVAL_SECONDS must be at least 1")
+        return value
+
+    @field_validator("access_token_expire_minutes")
+    @classmethod
+    def _validate_token_expiry(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("ACCESS_TOKEN_EXPIRE_MINUTES must be at least 1")
+        return value
+
     @field_validator("bkt_p_l0", "bkt_p_t", "bkt_p_g", "bkt_p_s")
     @classmethod
     def _validate_probability(cls, value: float) -> float:

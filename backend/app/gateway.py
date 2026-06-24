@@ -145,6 +145,36 @@ class KeyPool:
 pool = KeyPool()
 
 
+# Reusable local fallback provider so we don't create a new httpx client on
+# every fallback attempt. Lazily initialised on first use.
+_local_provider: ModelProvider | None = None
+
+
+def _get_local_provider() -> ModelProvider:
+    """Return a shared local fallback provider, creating it on first use."""
+    global _local_provider
+    if _local_provider is None:
+        _local_provider = create_provider(
+            "openai_compatible",
+            base_url=settings.local_base_url,
+            api_key="local",
+        )
+    return _local_provider
+
+
+async def close_local_provider() -> None:
+    """Close the shared local fallback provider's HTTP client."""
+    global _local_provider
+    if _local_provider is not None:
+        aclose = getattr(_local_provider, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception as exc:
+                logger.warning("Error closing local provider client: %s", exc)
+        _local_provider = None
+
+
 class GatewayError(Exception):
     pass
 
@@ -206,11 +236,7 @@ async def _try_cloud(
 async def _try_local(
     messages: list[dict[str, Any]],
 ) -> AsyncIterator[dict[str, Any]]:
-    provider = create_provider(
-        "openai_compatible",
-        base_url=settings.local_base_url,
-        api_key="local",
-    )
+    provider = _get_local_provider()
     try:
         async for chunk in _stream_with_first_token_timeout(
             provider,
@@ -257,6 +283,8 @@ async def chat_completion(
     """Non-streaming chat completion; used by VLM/KG services.
 
     Tries each healthy cloud key in turn, then falls back to the local model.
+    RTT is tracked on both success and error paths so degraded keys get
+    accurate latency signals.
     """
     last_error: Exception | None = None
     excluded: set[int] = set()
@@ -276,24 +304,31 @@ async def chat_completion(
             pool.mark_healthy(key_info, rtt_ms=(time.perf_counter() - start) * 1000)
             return response
         except Exception as exc:
+            # Track RTT even on failure so the weighted selector has accurate
+            # latency data for degraded keys.
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            pool.mark_degraded(key_info, reason=str(exc))
+            # mark_degraded resets error_count tracking but doesn't update RTT;
+            # update avg_rtt_ms directly for degraded keys.
+            if elapsed_ms > 0:
+                key_info.avg_rtt_ms = (
+                    RTT_EWMA_ALPHA * elapsed_ms
+                    + (1 - RTT_EWMA_ALPHA) * key_info.avg_rtt_ms
+                )
             last_error = exc
             logger.warning(
-                "Cloud chat completion failed for key %s: %s",
+                "Cloud chat completion failed for key %s (rtt=%.0fms): %s",
                 key_info.masked_key(),
+                elapsed_ms,
                 exc,
             )
-            pool.mark_degraded(key_info, reason=str(exc))
             if _is_retryable(exc):
                 continue
             break
 
-    # Local fallback
+    # Local fallback using the shared provider (connection reuse).
     logger.warning("All cloud keys failed; falling back to local model. Last error: %s", last_error)
-    provider = create_provider(
-        "openai_compatible",
-        base_url=settings.local_base_url,
-        api_key="local",
-    )
+    provider = _get_local_provider()
     return await provider.chat_completion(
         messages=messages,
         model=settings.local_model,
