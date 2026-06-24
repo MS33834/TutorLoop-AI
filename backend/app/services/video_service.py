@@ -148,7 +148,11 @@ async def process_video(
         timestamp = item["timestamp_seconds"]
         file_path = item["file_path"]
 
-        caption = f"Frame at {timestamp}s"
+        # Use a meaningful placeholder caption that includes the video title
+        # and timestamp. This is overwritten by VLM-generated captions during
+        # knowledge graph extraction, but until then it provides enough
+        # textual signal for embedding-based retrieval to work reasonably.
+        caption = f"{title} - {timestamp}s"
         frame = VideoFrame(
             video_id=video_id,
             timestamp_seconds=timestamp,

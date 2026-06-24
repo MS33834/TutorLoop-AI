@@ -32,7 +32,11 @@ async def close_driver() -> None:
 async def create_nodes_and_edges(
     course_id: str, nodes: list[dict], edges: list[dict]
 ) -> tuple[list[str], list[str]]:
-    """Create KnowledgeNode nodes and PREREQUISITE edges in Neo4j.
+    """Create KnowledgeNode nodes and dependency edges in Neo4j.
+
+    Edge relations are stored as Neo4j relationship type (uppercased) so that
+    different relation types (prerequisite, related, next, etc.) are preserved
+    as distinct relationship types in the graph database.
 
     Returns the created Neo4j node IDs for nodes and relationship IDs for edges.
     """
@@ -49,15 +53,19 @@ async def create_nodes_and_edges(
         }
         for node in nodes
     ]
-    edge_batch = [
-        {
-            "from": edge.get("from"),
-            "to": edge.get("to"),
-            "relation": edge.get("relation", "prerequisite"),
-        }
-        for edge in edges
-        if edge.get("from") and edge.get("to")
-    ]
+    # Group edges by relation type so each type gets its own relationship label.
+    edges_by_type: dict[str, list[dict]] = {}
+    for edge in edges:
+        if not edge.get("from") or not edge.get("to"):
+            continue
+        relation = (edge.get("relation") or "prerequisite").strip().upper()
+        # Sanitize: Neo4j relationship types must be alphanumeric + underscore.
+        relation = "".join(c if c.isalnum() or c == "_" else "_" for c in relation)
+        if not relation:
+            relation = "PREREQUISITE"
+        edges_by_type.setdefault(relation, []).append(
+            {"from": edge["from"], "to": edge["to"], "relation": edge.get("relation", "prerequisite")}
+        )
 
     async with driver.session() as session:
         # Create nodes in bulk via UNWIND.
@@ -78,19 +86,19 @@ async def create_nodes_and_edges(
                 node_ids.append(record["eid"])
             await node_result.consume()
 
-        # Create edges in bulk via UNWIND.
-        if edge_batch:
+        # Create edges per relation type so each type is a distinct relationship.
+        for rel_type, batch in edges_by_type.items():
             edge_result = await session.run(
-                """
+                f"""
                 UNWIND $edges AS edge
-                MATCH (a:KnowledgeNode {course_id: $course_id, node_id: edge.from})
-                MATCH (b:KnowledgeNode {course_id: $course_id, node_id: edge.to})
-                MERGE (a)-[r:PREREQUISITE]->(b)
+                MATCH (a:KnowledgeNode {{course_id: $course_id, node_id: edge.from}})
+                MATCH (b:KnowledgeNode {{course_id: $course_id, node_id: edge.to}})
+                MERGE (a)-[r:{rel_type}]->(b)
                 SET r.relation = edge.relation
                 RETURN elementId(r) AS eid
                 """,
                 course_id=course_id,
-                edges=edge_batch,
+                edges=batch,
             )
             async for record in edge_result:
                 rel_ids.append(record["eid"])
@@ -124,19 +132,22 @@ async def get_graph(course_id: str) -> dict:
                 }
             )
 
+        # Match any relationship type between course nodes, not just PREREQUISITE.
         edge_result = await session.run(
             """
-            MATCH (a:KnowledgeNode {course_id: $course_id})-[r:PREREQUISITE]->(b:KnowledgeNode {course_id: $course_id})
-            RETURN a.node_id AS from_id, b.node_id AS to_id, r.relation AS relation
+            MATCH (a:KnowledgeNode {course_id: $course_id})-[r]->(b:KnowledgeNode {course_id: $course_id})
+            RETURN a.node_id AS from_id, b.node_id AS to_id,
+                   r.relation AS relation, type(r) AS rel_type
             """,
             course_id=course_id,
         )
         async for record in edge_result:
+            relation = record["relation"] or record["rel_type"] or "prerequisite"
             edges.append(
                 {
                     "from": record["from_id"],
                     "to": record["to_id"],
-                    "relation": record["relation"],
+                    "relation": relation,
                 }
             )
 

@@ -1,10 +1,11 @@
 <script setup>
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { apiFetch } from '../api/client.js'
 import { useUserStore } from '../stores/user.js'
 
 const router = useRouter()
+const route = useRoute()
 const userStore = useUserStore()
 
 const mode = ref('login') // 'login' | 'register'
@@ -32,7 +33,9 @@ async function submit() {
       body: JSON.stringify(body)
     })
     userStore.setAuth(data.access_token, data.refresh_token, data.user)
-    router.replace('/')
+    // Redirect to the originally requested page if the router set a redirect query.
+    const redirect = route.query.redirect
+    router.replace(redirect && typeof redirect === 'string' ? redirect : '/')
   } catch (err) {
     error.value = err.message || '操作失败'
   } finally {

@@ -33,9 +33,10 @@ def test_normalize_graph_filters_invalid_edges():
     assert graph["edges"] == []
 
 
-def test_normalize_graph_uses_fallback_when_no_nodes():
+def test_normalize_graph_returns_empty_when_no_nodes():
     graph = _normalize_graph({"nodes": [], "edges": []})
-    assert len(graph["nodes"]) == 3
+    assert graph["nodes"] == []
+    assert graph["edges"] == []
 
 
 def test_extract_json_object_strips_markdown_fences():

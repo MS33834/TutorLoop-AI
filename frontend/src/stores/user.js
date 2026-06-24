@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { apiFetch } from '../api/client.js'
+import { API_BASE, apiFetch } from '../api/client.js'
 
 const USER_KEY = 'tutorloop_user'
 const TOKEN_KEY = 'tutorloop_token'
@@ -42,7 +42,9 @@ function decodeJwtPayload(token) {
 
 function isTokenExpired(token) {
   const payload = decodeJwtPayload(token)
-  if (!payload || !payload.exp) return false
+  // A malformed token or one without an expiry must be treated as expired
+  // for security — never trust a token we cannot verify.
+  if (!payload || !payload.exp) return true
   // Treat tokens expiring within the next 30 seconds as expired to avoid
   // race conditions where the token expires mid-request.
   return payload.exp * 1000 <= Date.now() + 30000
@@ -96,7 +98,6 @@ export const useUserStore = defineStore('user', () => {
 
     _refreshPromise = (async () => {
       try {
-        const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
         const res = await fetch(`${API_BASE}/api/auth/refresh`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -153,9 +154,9 @@ export const useUserStore = defineStore('user', () => {
         // ignore
       }
     } catch (err) {
-      // Only clear auth on 401/403 (actual auth failures), not on network
+      // Only clear auth on actual auth failures (401/403), not on network
       // errors or server failures — those shouldn't log the user out.
-      if (err.code === 'UNAUTHORIZED' || err.status === 403) {
+      if (err.code === 'UNAUTHORIZED' || err.code === 'HTTP_403') {
         clearAuth()
       }
     }

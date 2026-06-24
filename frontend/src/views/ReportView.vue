@@ -15,6 +15,7 @@ import {
   Tooltip,
   Legend
 } from 'chart.js'
+import { normalizePercent, formatPercent, formatDate, formatShortDate } from '../utils/format.js'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
 
@@ -57,31 +58,6 @@ async function loadTimeline() {
   } finally {
     timelineLoading.value = false
   }
-}
-
-function normalizePercent(value) {
-  if (value === null || value === undefined || Number.isNaN(value)) return 0
-  let num = typeof value === 'number' ? value : Number(value)
-  if (Number.isNaN(num)) return 0
-  if (num >= 0 && num <= 1) num = Math.round(num * 100)
-  return Math.round(Math.min(100, Math.max(0, num)))
-}
-
-function formatPercent(value) {
-  return `${normalizePercent(value)}%`
-}
-
-function formatDate(value) {
-  if (!value) return '未知'
-  const d = new Date(value)
-  return Number.isNaN(d.getTime()) ? '未知' : d.toLocaleString()
-}
-
-function formatShortDate(value) {
-  if (!value) return ''
-  const d = new Date(value)
-  if (Number.isNaN(d.getTime())) return ''
-  return `${d.getMonth() + 1}/${d.getDate()}`
 }
 
 const masteredItems = computed(() => {

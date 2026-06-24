@@ -25,36 +25,9 @@ from app.services.model_providers import OpenAICompatibleProvider, ProviderError
 logger = logging.getLogger(__name__)
 
 
-SAMPLE_FRAME_COUNT = 4
+SAMPLE_FRAME_COUNT = 8
 MAX_CAPTION_TOKENS = 256
 MAX_KG_TOKENS = 4096
-
-FALLBACK_GRAPH = {
-    "nodes": [
-        {
-            "id": "n1",
-            "name": "课程导入",
-            "description": "本课程的基础概念与学习目标概述（骨架示例数据）。",
-            "threshold": 0.8,
-        },
-        {
-            "id": "n2",
-            "name": "核心知识点 A",
-            "description": "课程中的第一个核心知识点（骨架示例数据）。",
-            "threshold": 0.8,
-        },
-        {
-            "id": "n3",
-            "name": "核心知识点 B",
-            "description": "在知识点 A 之后学习的进阶内容（骨架示例数据）。",
-            "threshold": 0.8,
-        },
-    ],
-    "edges": [
-        {"from": "n1", "to": "n2", "relation": "prerequisite"},
-        {"from": "n2", "to": "n3", "relation": "prerequisite"},
-    ],
-}
 
 
 async def _load_video_and_frames(
@@ -388,8 +361,8 @@ def _repair_truncated_json(text: str) -> str:
 def _normalize_graph(raw: Any) -> dict:
     """Normalize and validate a knowledge graph payload, filling sensible defaults."""
     if not isinstance(raw, dict):
-        logger.warning("KG response is not a JSON object; using fallback")
-        return dict(FALLBACK_GRAPH)
+        logger.warning("KG response is not a JSON object; returning empty graph")
+        return {"nodes": [], "edges": []}
 
     nodes = raw.get("nodes") or raw.get("concepts") or raw.get("entities") or []
     edges = raw.get("edges") or raw.get("relationships") or raw.get("links") or []
@@ -458,8 +431,8 @@ def _normalize_graph(raw: Any) -> dict:
             )
 
     if not normalized_nodes:
-        logger.warning("No valid nodes extracted; using fallback skeleton graph")
-        return dict(FALLBACK_GRAPH)
+        logger.warning("No valid nodes extracted; returning empty graph")
+        return {"nodes": [], "edges": []}
 
     return {"nodes": normalized_nodes, "edges": normalized_edges}
 
@@ -475,8 +448,8 @@ def _parse_kg_response(text: str) -> dict:
         try:
             data = json.loads(repaired)
         except json.JSONDecodeError:
-            logger.warning("Could not parse KG JSON even after repair; using fallback")
-            data = dict(FALLBACK_GRAPH)
+            logger.warning("Could not parse KG JSON even after repair; returning empty graph")
+            return {"nodes": [], "edges": []}
 
     return _normalize_graph(data)
 
@@ -540,14 +513,16 @@ async def extract_knowledge_graph(
         graph = await _call_vlm(messages)
         logger.info("Extracted knowledge graph with %d nodes", len(graph.get("nodes", [])))
     except Exception as exc:
-        logger.warning("VLM extraction failed (%s); returning fallback skeleton graph without persisting it.", exc)
-        # Return a skeleton so the UI/API doesn't break, but do NOT store it as
-        # real course data. Storing fake nodes would poison recommendations.
+        logger.warning("VLM extraction failed (%s); returning empty graph without persisting it.", exc)
+        # Return an empty graph so the UI/API knows extraction failed without
+        # fabricating fake knowledge points that would mislead users.
         return {
             "course_id": course_id,
             "video_id": video_id,
             "_fallback": True,
-            **FALLBACK_GRAPH,
+            "nodes": [],
+            "edges": [],
+            "message": "知识图谱抽取失败，请稍后重试或检查 VLM 配置。",
         }
 
     nodes = graph.get("nodes", [])

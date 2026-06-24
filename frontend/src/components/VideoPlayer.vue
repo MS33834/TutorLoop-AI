@@ -8,7 +8,7 @@ const props = defineProps({
   highlightWords: { type: Array, default: () => [] }
 })
 
-const emit = defineEmits(['screenshot', 'timeupdate'])
+const emit = defineEmits(['screenshot', 'timeupdate', 'screenshot-error'])
 
 const video = ref(null)
 const playing = ref(false)
@@ -18,6 +18,7 @@ const buffered = ref(0)
 const showControls = ref(true)
 const playbackRate = ref(1)
 const showSubtitles = ref(true)
+const screenshotError = ref('')
 let controlsTimer = null
 
 const PLAYBACK_RATES = [0.5, 1, 1.25, 1.5, 2]
@@ -122,20 +123,26 @@ function seekTo(seconds) {
 }
 
 function takeScreenshot() {
-  if (!video.value || !props.src) return
+  if (!video.value || !props.src) {
+    screenshotError.value = '视频尚未加载，无法截图'
+    emit('screenshot-error', screenshotError.value)
+    return
+  }
+  screenshotError.value = ''
   const canvas = document.createElement('canvas')
   canvas.width = video.value.videoWidth || 640
   canvas.height = video.value.videoHeight || 360
   const ctx = canvas.getContext('2d')
   if (!ctx) {
-    // getContext can return null when the context is unavailable (e.g. in
-    // some privacy/incognito modes or when GPU resources are exhausted).
+    screenshotError.value = '无法获取画布上下文，截图失败'
+    emit('screenshot-error', screenshotError.value)
     return
   }
   try {
     ctx.drawImage(video.value, 0, 0, canvas.width, canvas.height)
-  } catch {
-    // drawImage can throw if the video frame is not yet available.
+  } catch (err) {
+    screenshotError.value = '视频帧尚未就绪，请稍后重试'
+    emit('screenshot-error', screenshotError.value)
     return
   }
   const dataURL = canvas.toDataURL('image/jpeg', 0.9)
@@ -236,6 +243,10 @@ defineExpose({
           📷
         </button>
       </div>
+    </div>
+
+    <div v-if="screenshotError" class="screenshot-toast" role="alert">
+      {{ screenshotError }}
     </div>
   </div>
 </template>
@@ -394,5 +405,24 @@ defineExpose({
   color: #ffffff;
   font-size: 0.875rem;
   font-variant-numeric: tabular-nums;
+}
+
+.screenshot-toast {
+  position: absolute;
+  top: 0.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.5rem 1rem;
+  background: rgba(239, 68, 68, 0.9);
+  color: #ffffff;
+  font-size: 0.8125rem;
+  border-radius: 0.375rem;
+  pointer-events: none;
+  animation: fadeOut 3s forwards;
+}
+
+@keyframes fadeOut {
+  0%, 70% { opacity: 1; }
+  100% { opacity: 0; }
 }
 </style>

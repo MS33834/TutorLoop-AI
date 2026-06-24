@@ -12,6 +12,7 @@ import {
   LinearScale
 } from 'chart.js'
 import { getClassReport } from '../api/reports.js'
+import { formatPercent, formatDate } from '../utils/format.js'
 
 ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale)
 
@@ -56,18 +57,8 @@ function goToPage(page) {
   loadReport(Math.max(0, newSkip))
 }
 
-function formatPercent(value) {
-  if (value === null || value === undefined || Number.isNaN(value)) return '-'
-  let num = typeof value === 'number' ? value : Number(value)
-  if (Number.isNaN(num)) return '-'
-  if (num >= 0 && num <= 1) num = Math.round(num * 100)
-  return `${Math.round(Math.min(100, Math.max(0, num)))}%`
-}
-
-function formatDate(value) {
-  if (!value) return '-'
-  const d = new Date(value)
-  return Number.isNaN(d.getTime()) ? value : d.toLocaleString('zh-CN')
+function retryCurrentPage() {
+  loadReport(currentSkip.value)
 }
 
 const activityChartData = computed(() => {
@@ -108,7 +99,7 @@ const activityChartOptions = {
     <div v-if="loading" class="status">加载中…</div>
     <div v-else-if="error" class="status error">
       <p>{{ error }}</p>
-      <button class="retry-btn" type="button" @click="loadReport">重试</button>
+      <button class="retry-btn" type="button" @click="retryCurrentPage">重试</button>
     </div>
 
     <template v-else-if="report">
@@ -151,14 +142,14 @@ const activityChartOptions = {
 
       <div class="two-col">
         <section class="panel">
-          <h2 class="panel-title">近 7 天活跃趋势</h2>
+          <h2 class="panel-title">活跃趋势</h2>
           <div class="chart-wrapper">
             <Bar :data="activityChartData" :options="activityChartOptions" />
           </div>
         </section>
 
         <section class="panel">
-          <h2 class="panel-title">薄弱知识点 Top10</h2>
+          <h2 class="panel-title">薄弱知识点</h2>
           <ul v-if="report.weak_nodes?.length" class="weak-list">
             <li v-for="node in report.weak_nodes" :key="node.node_id" class="weak-item">
               <span class="weak-name">{{ node.name }}</span>

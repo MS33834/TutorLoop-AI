@@ -75,15 +75,35 @@ const roomUuid = computed(() => room.value?.id || '')
 
 onMounted(() => {
   chat.setRoom(props.slug)
-  roomSessionId.value = sessionStorage.getItem('room_session_id') || crypto.randomUUID()
+  roomSessionId.value = sessionStorage.getItem('room_session_id') || generateUUID()
   sessionStorage.setItem('room_session_id', roomSessionId.value)
+  // Use sendBeacon on page hide so watch records survive navigation/close.
+  window.addEventListener('pagehide', onPageHide)
   loadCourse()
 })
+
+function generateUUID() {
+  try {
+    return crypto.randomUUID()
+  } catch {
+    // Fallback for browsers without crypto.randomUUID (non-HTTPS / older).
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0
+      const v = c === 'x' ? r : (r & 0x3) | 0x8
+      return v.toString(16)
+    })
+  }
+}
+
+function onPageHide() {
+  sendWatchRecord(true)
+}
 
 onBeforeUnmount(() => {
   isUnmounted = true
   cancelStream()
-  sendWatchRecord()
+  window.removeEventListener('pagehide', onPageHide)
+  sendWatchRecord(true)
 })
 
 watch(() => props.slug, (newSlug, oldSlug) => {
@@ -233,7 +253,7 @@ function handleError(message) {
   loading.value = false
 }
 
-async function sendWatchRecord() {
+async function sendWatchRecord(useBeacon = false) {
   if (!courseId.value || watchSeconds.value <= 0) return
   // Anonymous watch records are only stored when tied to a room.
   if (!user.isLoggedIn && !roomUuid.value) return
@@ -248,6 +268,20 @@ async function sendWatchRecord() {
     answer_text: '',
     watch_seconds: Math.round(watchSeconds.value)
   }
+
+  // When unloading the page, use sendBeacon so the request survives navigation.
+  if (useBeacon && navigator.sendBeacon) {
+    try {
+      const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' })
+      navigator.sendBeacon(`${API_BASE}/api/interactions`, blob)
+      watchSeconds.value = 0
+      lastTickAt.value = null
+    } catch {
+      // Best effort — silently ignore.
+    }
+    return
+  }
+
   try {
     await apiFetch('/api/interactions', {
       method: 'POST',
@@ -548,7 +582,7 @@ async function send(needAnswer = false) {
 function formatDate(value) {
   if (!value) return '未知'
   const d = new Date(value)
-  return Number.isNaN(d.getTime()) ? '未知' : d.toLocaleString()
+  return Number.isNaN(d.getTime()) ? '未知' : d.toLocaleString('zh-CN')
 }
 
 function onKeydown(e) {
@@ -600,6 +634,9 @@ function onKeydown(e) {
           <div v-else class="video-placeholder">
             <p>课程视频还在准备中</p>
             <p class="sub">老师上传后即可开始学习。</p>
+          </div>
+          <div v-if="subtitleError" class="subtitle-error" role="alert">
+            {{ subtitleError }}
           </div>
         </div>
 
@@ -802,6 +839,15 @@ function onKeydown(e) {
   background: #000000;
   border-radius: 0.75rem;
   overflow: hidden;
+}
+
+.subtitle-error {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  color: #b91c1c;
+  background: #fee2e2;
+  border-radius: 0.375rem;
 }
 
 .video-placeholder {

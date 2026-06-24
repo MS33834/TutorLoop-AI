@@ -10,6 +10,7 @@ import {
   Tooltip,
   Legend
 } from 'chart.js'
+import { normalizePercent } from '../utils/format.js'
 
 ChartJS.register(RadialLinearScale, PointElement, LineElement, Filler, Tooltip, Legend)
 
@@ -23,7 +24,6 @@ const props = defineProps({
 const emit = defineEmits(['node-click'])
 
 const chartError = ref(false)
-const chartRef = ref(null)
 
 onErrorCaptured((err) => {
   // eslint-disable-next-line no-console
@@ -31,18 +31,6 @@ onErrorCaptured((err) => {
   chartError.value = true
   return true
 })
-
-function normalizePercent(value) {
-  if (value === null || value === undefined || Number.isNaN(value)) return 0
-  if (typeof value !== 'number') {
-    const parsed = Number(value)
-    if (Number.isNaN(parsed)) return 0
-    value = parsed
-  }
-  // 兼容后端返回的 0-1 小数和 0-100 百分数
-  if (value >= 0 && value <= 1) return Math.round(value * 100)
-  return Math.round(Math.min(100, Math.max(0, value)))
-}
 
 function itemKey(item, index) {
   return item?.node_id || item?.name || `item-${index}`
