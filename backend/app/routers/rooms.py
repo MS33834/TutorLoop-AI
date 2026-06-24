@@ -95,7 +95,7 @@ async def _require_course_owner(course_id: str, current_user: User) -> Course:
 async def _get_room_by_slug(session, slug: str) -> Room | None:
     """Return an active room by slug, or None if not found."""
     result = await session.execute(
-        select(Room).where(Room.slug == slug, Room.is_active == True)
+        select(Room).where(Room.slug == slug, Room.is_active == True)  # noqa: E712
     )
     return result.scalar_one_or_none()
 

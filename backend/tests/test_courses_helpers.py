@@ -19,7 +19,6 @@ from app.routers.courses import (
     _validate_video_upload,
 )
 
-
 # --- _validate_video_upload ---------------------------------------------
 
 

@@ -14,7 +14,6 @@ from app.schemas import (
     RoomCreate,
 )
 
-
 # --- KnowledgeNodeCreate -------------------------------------------------
 
 

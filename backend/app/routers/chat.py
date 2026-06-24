@@ -32,7 +32,7 @@ async def _resolve_room_for_anonymous(room_slug: str | None) -> Room | None:
         return None
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(Room).where(Room.slug == room_slug, Room.is_active == True)
+            select(Room).where(Room.slug == room_slug, Room.is_active == True)  # noqa: E712
         )
         room = result.scalar_one_or_none()
         if room is None:

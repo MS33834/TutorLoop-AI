@@ -1,6 +1,5 @@
 """Unit tests for knowledge graph parsing helpers."""
 
-import pytest
 
 from app.services.kg_extractor import _extract_json_object, _normalize_graph, _repair_truncated_json
 

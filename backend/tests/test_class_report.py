@@ -1,6 +1,6 @@
 """Unit tests for class-level report aggregation helpers."""
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 from app.services.class_report_service import (
     _aggregate_weak_nodes,

@@ -2,7 +2,7 @@
 
 import logging
 import os
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from arq import create_pool
 from arq.connections import RedisSettings
@@ -18,7 +18,8 @@ def _redis_settings() -> RedisSettings:
     """Build RedisSettings from REDIS_URL or defaults.
 
     Supports the full ``redis://[username[:password]@]host[:port][/db]``
-    syntax via urllib.parse, including credentials and a database index.
+    syntax via urllib.parse, including percent-encoded credentials and a
+    database index.
     """
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
     parsed = urlparse(redis_url)
@@ -28,9 +29,9 @@ def _redis_settings() -> RedisSettings:
 
     host = parsed.hostname or "localhost"
     port = parsed.port or 6379
-    # urlparse separates username/password from the host and percent-decodes
-    # the password already; pass it straight through to RedisSettings.
-    password = parsed.password
+    # urlparse returns the password percent-encoded; decode it so special
+    # characters (e.g. @, :, /) in the password are restored.
+    password = unquote(parsed.password) if parsed.password else None
 
     settings_kwargs: dict = {"host": host, "port": port, "password": password}
 
