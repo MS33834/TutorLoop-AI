@@ -1,25 +1,37 @@
 <script setup>
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import { RouterLink, RouterView, useRouter } from 'vue-router'
 import { useUserStore } from './stores/user.js'
 import ErrorBoundary from './components/ErrorBoundary.vue'
 
 const router = useRouter()
 const userStore = useUserStore()
+const mobileMenuOpen = ref(false)
+const isOnline = ref(navigator.onLine)
 
 onMounted(() => {
   userStore.fetchProfile()
+  window.addEventListener('online', () => { isOnline.value = true })
+  window.addEventListener('offline', () => { isOnline.value = false })
 })
 
 function logout() {
   userStore.clearAuth()
+  mobileMenuOpen.value = false
   router.push('/')
+}
+
+function closeMobileMenu() {
+  mobileMenuOpen.value = false
 }
 </script>
 
 <template>
   <a href="#main-content" class="skip-link">跳转到主要内容</a>
   <div class="app">
+    <div v-if="!isOnline" class="offline-banner" role="status" aria-live="polite">
+      网络已断开，部分功能可能不可用
+    </div>
     <header class="header">
       <RouterLink to="/" class="brand" aria-label="TutorLoop 首页">
         <span class="brand-logo" aria-hidden="true">TL</span>
@@ -42,7 +54,45 @@ function logout() {
         </template>
         <RouterLink v-else to="/login" class="nav-link login">登录</RouterLink>
       </nav>
+      <button
+        class="menu-toggle"
+        type="button"
+        aria-label="打开导航菜单"
+        aria-expanded="false"
+        aria-controls="mobile-nav"
+        @click="mobileMenuOpen = !mobileMenuOpen"
+      >
+        <span class="menu-bar" />
+        <span class="menu-bar" />
+        <span class="menu-bar" />
+      </button>
     </header>
+    <nav
+      id="mobile-nav"
+      class="mobile-nav"
+      :class="{ open: mobileMenuOpen }"
+      aria-label="移动端导航"
+    >
+      <RouterLink to="/" class="mobile-nav-link" @click="closeMobileMenu">首页</RouterLink>
+      <RouterLink v-if="userStore.isLoggedIn" to="/upload" class="mobile-nav-link" @click="closeMobileMenu">上传课程</RouterLink>
+      <RouterLink v-if="userStore.isLoggedIn" to="/dashboard" class="mobile-nav-link" @click="closeMobileMenu">房间管理</RouterLink>
+      <a
+        href="https://github.com/MS33834/TutorLoop-AI"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="mobile-nav-link"
+        @click="closeMobileMenu"
+      >GitHub</a>
+      <button
+        v-if="userStore.isLoggedIn"
+        class="mobile-nav-link"
+        type="button"
+        @click="logout"
+      >
+        退出（{{ userStore.user?.username }}）
+      </button>
+      <RouterLink v-else to="/login" class="mobile-nav-link" @click="closeMobileMenu">登录</RouterLink>
+    </nav>
     <main id="main-content" class="main" tabindex="-1">
       <ErrorBoundary>
         <RouterView />
@@ -232,6 +282,87 @@ body {
 
 .footer p {
   margin: 0;
+}
+
+.offline-banner {
+  flex-shrink: 0;
+  padding: 0.5rem 0.75rem;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: #92400e;
+  background: #fef3c7;
+  border-bottom: 1px solid #fde68a;
+}
+
+.menu-toggle {
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.3125rem;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0.375rem;
+  border: 1px solid var(--tl-border);
+  border-radius: var(--tl-radius-sm);
+  background: var(--tl-surface);
+  cursor: pointer;
+}
+
+.menu-bar {
+  display: block;
+  height: 0.125rem;
+  background: var(--tl-text);
+  border-radius: 0.0625rem;
+}
+
+.mobile-nav {
+  display: none;
+  flex-direction: column;
+  padding: 0.5rem;
+  background: var(--tl-surface);
+  border-bottom: 1px solid var(--tl-border);
+}
+
+.mobile-nav.open {
+  display: flex;
+}
+
+.mobile-nav-link {
+  padding: 0.75rem 1rem;
+  color: var(--tl-text);
+  text-decoration: none;
+  font-size: 0.9375rem;
+  border-radius: var(--tl-radius-sm);
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mobile-nav-link:hover,
+.mobile-nav-link.router-link-active {
+  background: #eff6ff;
+  color: var(--tl-primary);
+}
+
+.mobile-nav-link.login {
+  background: var(--tl-primary);
+  color: var(--tl-surface);
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .header {
+    padding: 0.625rem 0.75rem;
+  }
+
+  .nav {
+    display: none;
+  }
+
+  .menu-toggle {
+    display: flex;
+  }
 }
 
 @media (max-width: 480px) {
