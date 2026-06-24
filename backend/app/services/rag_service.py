@@ -1,13 +1,12 @@
 """Multimodal RAG retrieval service backed by pgvector."""
 
-import json
 import logging
-import math
 
 from sqlalchemy import select, text
 
 from app.db.postgres import AsyncSessionLocal
-from app.models.db import CourseMaterial, KnowledgeNode, Video, VideoFrame
+from app.db.vector_search import search_similar_frames, search_similar_nodes
+from app.models.db import CourseMaterial, Video
 from app.services.embedding_service import encode_text
 
 logger = logging.getLogger(__name__)
@@ -18,31 +17,16 @@ TOP_K_MATERIALS = 2
 MAX_MATERIAL_TEXT_LENGTH = 4000
 
 
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    if not a or not b:
+def _text_overlap_score(query: str, text: str | None) -> float:
+    """Simple token overlap fallback when embeddings are unavailable."""
+    if not text:
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0 or norm_b == 0:
+    query_tokens = set(query.lower().split())
+    text_tokens = set(text.lower().split())
+    if not query_tokens:
         return 0.0
-    return dot / (norm_a * norm_b)
-
-
-def _to_float_vector(value) -> list[float]:
-    """Normalize an embedding stored as list/JSONB/Vector to a Python list of floats."""
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [float(v) for v in value]
-    if isinstance(value, str):
-        parsed = json.loads(value)
-        return [float(v) for v in parsed]
-    return []
-
-
-def _format_vector(query_embedding: list[float]) -> str:
-    return f"[{','.join(str(float(v)) for v in query_embedding)}]"
+    overlap = len(query_tokens & text_tokens)
+    return overlap / len(query_tokens)
 
 
 async def _nearest_frames_by_timestamp(
@@ -66,114 +50,25 @@ async def _nearest_frames_by_timestamp(
         return [dict(row) for row in result.mappings().all()]
 
 
-async def _similar_frames_by_vector(
-    video_id: str, query_embedding: list[float], top_k: int
-) -> list[dict]:
-    vec = _format_vector(query_embedding)
-    try:
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                text(
-                    """
-                    SELECT id, timestamp_seconds, file_path, caption,
-                           1 - (embedding <=> :vec::vector) AS similarity
-                    FROM video_frames
-                    WHERE video_id = :video_id AND embedding IS NOT NULL
-                    ORDER BY embedding <=> :vec::vector
-                    LIMIT :limit
-                    """
-                ),
-                {"video_id": video_id, "vec": vec, "limit": top_k},
-            )
-            return [dict(row) for row in result.mappings().all()]
-    except Exception as exc:
-        logger.warning("Vector frame search failed: %s", exc)
-        return []
+def _row_to_frame(row: dict) -> dict:
+    """Normalise a vector_search row into the RAG frame format."""
+    return {
+        "id": row["id"],
+        "timestamp_seconds": row["timestamp_seconds"],
+        "file_path": row["file_path"],
+        "caption": row.get("caption"),
+        "similarity": round(1.0 - float(row.get("distance", 0.0)), 4),
+    }
 
 
-async def _similar_frames_by_python(
-    video_id: str, query_embedding: list[float], top_k: int
-) -> list[dict]:
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(VideoFrame).where(
-                VideoFrame.video_id == video_id, VideoFrame.embedding.is_not(None)
-            )
-        )
-        frames = list(result.scalars().all())
-
-    scored = []
-    for frame in frames:
-        frame_embedding = _to_float_vector(frame.embedding)
-        sim = _cosine_similarity(query_embedding, frame_embedding) if frame_embedding else 0.0
-        scored.append((sim, frame))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [
-        {
-            "id": frame.id,
-            "timestamp_seconds": frame.timestamp_seconds,
-            "file_path": frame.file_path,
-            "caption": frame.caption,
-            "similarity": round(sim, 4),
-        }
-        for sim, frame in scored[:top_k]
-    ]
-
-
-async def _similar_nodes_by_vector(
-    course_id: str, query_embedding: list[float], top_k: int
-) -> list[dict]:
-    vec = _format_vector(query_embedding)
-    try:
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                text(
-                    """
-                    SELECT id, name, description,
-                           1 - (embedding <=> :vec::vector) AS similarity
-                    FROM knowledge_nodes
-                    WHERE course_id = :course_id AND embedding IS NOT NULL
-                    ORDER BY embedding <=> :vec::vector
-                    LIMIT :limit
-                    """
-                ),
-                {"course_id": course_id, "vec": vec, "limit": top_k},
-            )
-            return [dict(row) for row in result.mappings().all()]
-    except Exception as exc:
-        logger.warning("Vector node search failed: %s", exc)
-        return []
-
-
-async def _similar_nodes_by_python(
-    course_id: str, query_embedding: list[float], top_k: int
-) -> list[dict]:
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(KnowledgeNode).where(
-                KnowledgeNode.course_id == course_id,
-                KnowledgeNode.embedding.is_not(None),
-            )
-        )
-        nodes = list(result.scalars().all())
-
-    scored = []
-    for node in nodes:
-        node_embedding = _to_float_vector(node.embedding)
-        sim = _cosine_similarity(query_embedding, node_embedding) if node_embedding else 0.0
-        scored.append((sim, node))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [
-        {
-            "id": node.id,
-            "name": node.name,
-            "description": node.description,
-            "similarity": round(sim, 4),
-        }
-        for sim, node in scored[:top_k]
-    ]
+def _row_to_node(row: dict) -> dict:
+    """Normalise a vector_search row into the RAG node format."""
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "description": row.get("description"),
+        "similarity": round(1.0 - float(row.get("distance", 0.0)), 4),
+    }
 
 
 async def retrieve_context(
@@ -182,7 +77,7 @@ async def retrieve_context(
     screenshot_path: str | None = None,
     timestamp: float | None = None,
 ) -> dict:
-    """Retrieve relevant video frames and knowledge nodes for a question."""
+    """Retrieve relevant video frames, knowledge nodes and materials for a question."""
     question_embedding = encode_text(question)
 
     async with AsyncSessionLocal() as session:
@@ -195,13 +90,14 @@ async def retrieve_context(
         video_id, timestamp, TOP_K_FRAMES
     )
 
-    similar_frames = await _similar_frames_by_vector(
-        video_id, question_embedding, TOP_K_FRAMES
+    # vector_search handles both the pgvector fast path and the Python
+    # brute-force fallback, so RAG works whether pgvector is installed or not.
+    similar_frame_rows = await search_similar_frames(
+        video_id=video_id,
+        query_embedding=question_embedding,
+        top_k=TOP_K_FRAMES,
     )
-    if not similar_frames:
-        similar_frames = await _similar_frames_by_python(
-            video_id, question_embedding, TOP_K_FRAMES
-        )
+    similar_frames = [_row_to_frame(row) for row in similar_frame_rows]
 
     seen = set()
     merged_frames = []
@@ -212,20 +108,19 @@ async def retrieve_context(
 
     similar_nodes = []
     if course_id:
-        similar_nodes = await _similar_nodes_by_vector(
-            course_id, question_embedding, TOP_K_NODES
+        node_rows = await search_similar_nodes(
+            course_id=course_id,
+            query_embedding=question_embedding,
+            top_k=TOP_K_NODES,
         )
-        if not similar_nodes:
-            similar_nodes = await _similar_nodes_by_python(
-                course_id, question_embedding, TOP_K_NODES
-            )
+        similar_nodes = [_row_to_node(row) for row in node_rows]
 
-    # Retrieve relevant course materials (PDF text / image captions) by simple
-    # keyword/length heuristic if embeddings are unavailable; these augment the
-    # video-based RAG with supplementary documents.
+    # Retrieve relevant course materials ranked by keyword overlap with the
+    # question. When CourseMaterial gains an embedding column in the future,
+    # this can be switched to vector similarity without changing the API.
     materials = []
     if course_id:
-        materials = await _retrieve_course_materials(course_id)
+        materials = await _retrieve_course_materials(course_id, question)
 
     return {
         "frames": merged_frames[: TOP_K_FRAMES * 2],
@@ -235,12 +130,11 @@ async def retrieve_context(
     }
 
 
-async def _retrieve_course_materials(course_id: str) -> list[dict]:
-    """Return the most useful extracted text snippets from course materials.
+async def _retrieve_course_materials(course_id: str, question: str) -> list[dict]:
+    """Return the most relevant extracted text snippets from course materials.
 
-    For now we select the longest / most text-rich completed PDFs, capped by
-    length so they don't overwhelm the context window. Future enhancement:
-    vectorize material chunks and rank by cosine similarity to the question.
+    Materials are ranked by token overlap with the question so the most
+    pertinent supplementary documents are included in the context window.
     """
     async with AsyncSessionLocal() as session:
         result = await session.execute(
@@ -251,15 +145,20 @@ async def _retrieve_course_materials(course_id: str) -> list[dict]:
                 CourseMaterial.extracted_text.isnot(None),
             )
             .order_by(CourseMaterial.created_at.desc())
-            .limit(TOP_K_MATERIALS)
         )
-        materials = result.scalars().all()
+        materials = list(result.scalars().all())
 
-    output = []
+    scored = []
     for m in materials:
         text = (m.extracted_text or "").strip()
         if not text:
             continue
+        score = _text_overlap_score(question, text)
+        scored.append((score, m, text))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    output = []
+    for score, m, text in scored[:TOP_K_MATERIALS]:
         if len(text) > MAX_MATERIAL_TEXT_LENGTH:
             text = text[:MAX_MATERIAL_TEXT_LENGTH] + "…"
         output.append({
@@ -267,5 +166,6 @@ async def _retrieve_course_materials(course_id: str) -> list[dict]:
             "title": m.title,
             "file_type": m.file_type,
             "text": text,
+            "score": round(score, 4),
         })
     return output

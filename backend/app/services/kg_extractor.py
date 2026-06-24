@@ -187,6 +187,38 @@ async def _caption_frames(
     return captions
 
 
+async def _persist_frame_captions(
+    frames: list[VideoFrame],
+    frame_paths: list[str],
+    captions: list[str],
+) -> None:
+    """Write generated captions and their embeddings back to Postgres.
+
+    ``frames`` is the ordered list loaded from the database; ``frame_paths`` is
+    the (possibly sub-sampled) ordered list of paths passed to the VLM. We map
+    paths back to frame records by file_path so only the sampled frames are
+    updated.
+    """
+    if not frames or not frame_paths or len(frame_paths) != len(captions):
+        return
+
+    path_to_frame = {f.file_path: f for f in frames if f.file_path}
+    updates: list[tuple[VideoFrame, str]] = []
+    for path, caption in zip(frame_paths, captions, strict=False):
+        frame = path_to_frame.get(path)
+        if frame is not None:
+            updates.append((frame, caption))
+
+    if not updates:
+        return
+
+    async with AsyncSessionLocal() as session:
+        for frame, caption in updates:
+            frame.caption = caption
+            frame.embedding = encode_text(caption)
+        await session.commit()
+
+
 def _build_prompt(
     course: Course,
     frame_paths: list[str],
@@ -497,6 +529,10 @@ async def extract_knowledge_graph(
     # Caption frames first to reduce token usage and improve KG prompt quality.
     captions = await _caption_frames(course, frame_paths, transcript)
 
+    # Persist real VLM captions back to the frame records so RAG / recommendation
+    # can use meaningful text instead of the placeholder "Frame at Xs".
+    await _persist_frame_captions(frames, frame_paths, captions)
+
     prompt = _build_prompt(course, frame_paths, captions, transcript)
     messages = _build_messages(prompt, frame_paths)
 
@@ -504,9 +540,15 @@ async def extract_knowledge_graph(
         graph = await _call_vlm(messages)
         logger.info("Extracted knowledge graph with %d nodes", len(graph.get("nodes", [])))
     except Exception as exc:
-        logger.warning("VLM extraction failed (%s); using fallback skeleton graph.", exc)
-        graph = dict(FALLBACK_GRAPH)
-        graph["_fallback"] = True
+        logger.warning("VLM extraction failed (%s); returning fallback skeleton graph without persisting it.", exc)
+        # Return a skeleton so the UI/API doesn't break, but do NOT store it as
+        # real course data. Storing fake nodes would poison recommendations.
+        return {
+            "course_id": course_id,
+            "video_id": video_id,
+            "_fallback": True,
+            **FALLBACK_GRAPH,
+        }
 
     nodes = graph.get("nodes", [])
     edges = graph.get("edges", [])

@@ -18,6 +18,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.db.neo4j import close_driver, get_driver
 from app.db.postgres import close_db, engine, init_db
+from app.gateway import start_health_probe, stop_health_probe
 from app.limiter import limiter
 from app.routers import auth, chat, courses, rooms, users
 from app.tasks.worker import _redis_settings
@@ -51,8 +52,13 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("Could not connect to Redis task queue: %s", exc)
 
+    # Start periodic AI key health probing so the gateway can recover keys
+    # without waiting for a user request.
+    start_health_probe(interval_seconds=60.0)
+
     yield
 
+    stop_health_probe()
     if redis_pool is not None:
         await redis_pool.close()
     # Close shared httpx clients in the AI gateway key pool and local fallback.

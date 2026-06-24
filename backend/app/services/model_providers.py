@@ -276,9 +276,43 @@ class OpenAICompatibleProvider(ModelProvider):
 
 
 class LocalMockProvider(ModelProvider):
-    """Provider used in tests or for local fallback."""
+    """Provider used in tests or for local fallback.
+
+    When a local OpenAI-compatible endpoint is configured (LOCAL_BASE_URL),
+    this provider delegates to it. Otherwise it returns a deterministic,
+    context-aware placeholder response instead of a single fixed string.
+    """
 
     name = "local_mock"
+
+    def __init__(self, base_url: str | None = None, api_key: str = "local"):
+        self.base_url = (base_url or "").rstrip("/")
+        self.api_key = api_key
+        self._local: OpenAICompatibleProvider | None = None
+        if self.base_url:
+            self._local = OpenAICompatibleProvider(
+                base_url=self.base_url, api_key=self.api_key
+            )
+
+    def _placeholder_content(self, messages: list[dict[str, Any]]) -> str:
+        """Return a deterministic placeholder that references the user's question."""
+        user_text = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    user_text = content
+                elif isinstance(content, list) and content:
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            user_text = block.get("text", "")
+                            break
+                break
+        snippet = user_text[:60].replace("\n", " ") if user_text else "你的问题"
+        return (
+            f"本地模型暂时无法处理「{snippet}…」，请检查本地服务是否正常运行，"
+            "或稍后再试。"
+        )
 
     async def stream_chat(
         self,
@@ -286,7 +320,14 @@ class LocalMockProvider(ModelProvider):
         model: str,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
-        yield "这是一个本地兜底回复。"
+        if self._local is not None:
+            try:
+                async for chunk in self._local.stream_chat(messages, model, **kwargs):
+                    yield chunk
+                return
+            except Exception as exc:
+                logger.warning("Local mock delegate failed: %s", exc)
+        yield self._placeholder_content(messages)
 
     async def chat_completion(
         self,
@@ -294,18 +335,25 @@ class LocalMockProvider(ModelProvider):
         model: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        if self._local is not None:
+            try:
+                return await self._local.chat_completion(messages, model, **kwargs)
+            except Exception as exc:
+                logger.warning("Local mock delegate failed: %s", exc)
         return {
             "choices": [
                 {
                     "message": {
                         "role": "assistant",
-                        "content": "这是一个本地兜底回复。",
+                        "content": self._placeholder_content(messages),
                     }
                 }
             ]
         }
 
     async def health_check(self) -> dict[str, Any]:
+        if self._local is not None:
+            return await self._local.health_check()
         return {"status": "healthy"}
 
 

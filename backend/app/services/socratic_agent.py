@@ -14,12 +14,15 @@ The agent wraps the RAG context with a Socratic system prompt and delegates
 the actual generation to the AI gateway.
 """
 
+import json
 import logging
+import re
 from typing import Any
 
 from sqlalchemy import select
 
 from app.db.postgres import AsyncSessionLocal
+from app.gateway import chat_completion
 from app.models.db import KnowledgeNode, Mastery
 
 logger = logging.getLogger(__name__)
@@ -152,3 +155,108 @@ async def build_socratic_messages(
         p_known=p_known, context_text=context_text, node_name=node_name
     )
     return [{"role": "system", "content": system_prompt}, *messages]
+
+
+_ASSESSMENT_PROMPT = (
+    "你是一位严谨的教学评估助手。请根据知识点和上下文，判断学生的回答是否正确。\n"
+    "输出必须是纯 JSON，不要包含任何其他解释或 markdown 代码块。格式如下：\n"
+    '{"is_correct": true 或 false, "confidence": 0.0-1.0, "feedback": "简要说明判断理由"}\n'
+    "如果不确定，confidence 应偏低；如果回答明显无关或空白，is_correct 为 false。"
+)
+
+
+def _extract_json_object(text: str) -> str:
+    """Locate the outermost JSON object in a string."""
+    text = text.strip()
+    start = text.find("{")
+    if start == -1:
+        return text
+    depth = 0
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text[start:], start=start):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return text[start:]
+
+
+async def assess_answer(
+    question_context: str,
+    student_answer: str,
+    node_name: str | None = None,
+) -> dict[str, Any]:
+    """Use the LLM to assess whether a student's answer is correct.
+
+    Returns a dict with ``is_correct`` (bool or None), ``confidence`` (float),
+    and ``feedback`` (str). This lets the chat flow update BKT mastery without
+    requiring a separate frontend action.
+    """
+    if not student_answer or not student_answer.strip():
+        return {"is_correct": False, "confidence": 1.0, "feedback": "回答为空。"}
+
+    context_parts = []
+    if node_name:
+        context_parts.append(f"知识点：{node_name}")
+    if question_context:
+        context_parts.append(question_context)
+    context = "\n".join(context_parts) or "请评估以下学生回答。"
+
+    messages = [
+        {"role": "system", "content": _ASSESSMENT_PROMPT},
+        {
+            "role": "user",
+            "content": f"{context}\n\n学生回答：{student_answer}\n\n请给出 JSON 评估结果。",
+        },
+    ]
+
+    try:
+        response = await chat_completion(messages=messages, model_type="text")
+        text = response["choices"][0]["message"].get("content", "")
+        json_text = _extract_json_object(text)
+        data = json.loads(json_text)
+    except Exception as exc:
+        logger.warning("Assessment parsing failed: %s", exc)
+        return {"is_correct": None, "confidence": 0.0, "feedback": "无法评估回答。"}
+
+    is_correct = data.get("is_correct")
+    if not isinstance(is_correct, bool):
+        # Tolerate string values from less strict models.
+        lowered = str(is_correct).lower()
+        is_correct = lowered in {"true", "yes", "1", "正确"}
+
+    confidence = data.get("confidence", 0.5)
+    try:
+        confidence = float(confidence)
+    except (TypeError, ValueError):
+        confidence = 0.5
+    confidence = max(0.0, min(1.0, confidence))
+
+    feedback = str(data.get("feedback", "")).strip()
+    if not feedback:
+        feedback = "回答已评估。"
+
+    return {"is_correct": is_correct, "confidence": confidence, "feedback": feedback}
+
+
+def looks_like_answer(text: str) -> bool:
+    """Heuristic: does the user message look like an attempted answer?"""
+    if not text:
+        return False
+    # Require some substance and avoid pure punctuation/greetings.
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff]", "", text)
+    return len(cleaned) >= 5

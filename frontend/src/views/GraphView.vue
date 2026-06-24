@@ -7,7 +7,8 @@ import {
   updateKnowledgeNode,
   deleteKnowledgeNode,
   createKnowledgeEdge,
-  deleteKnowledgeEdge
+  deleteKnowledgeEdge,
+  updateGraphPositions
 } from '../api/graph.js'
 
 const props = defineProps({
@@ -67,6 +68,8 @@ async function loadGraph() {
   }
 }
 
+let saveLayoutTimeout = null
+
 function initGraph() {
   if (!container.value || !graph.value) return
 
@@ -75,14 +78,18 @@ function initGraph() {
   const edges = graph.value.edges || []
 
   nodes.forEach((node, index) => {
-    elements.push({
+    const el = {
       data: {
         id: String(node.id ?? index),
         label: node.name || node.label || `节点 ${index + 1}`,
         description: node.description || '',
         threshold: node.threshold ?? 0.8
       }
-    })
+    }
+    if (node.position_x != null && node.position_y != null) {
+      el.position = { x: node.position_x, y: node.position_y }
+    }
+    elements.push(el)
   })
 
   edges.forEach((edge) => {
@@ -170,6 +177,51 @@ function initGraph() {
       panelMode.value = 'none'
     }
   })
+
+  // Persist node positions after dragging. Debounce rapid drag events.
+  cy.on('dragfree', 'node', () => {
+    if (saveLayoutTimeout) {
+      clearTimeout(saveLayoutTimeout)
+    }
+    saveLayoutTimeout = setTimeout(saveLayout, 800)
+  })
+}
+
+function collectPositions() {
+  if (!cy) return []
+  return cy.nodes().map((node) => ({
+    node_id: node.id(),
+    position_x: node.position().x,
+    position_y: node.position().y
+  }))
+}
+
+async function saveLayout() {
+  if (!cy) return
+  saving.value = true
+  error.value = ''
+  successMsg.value = ''
+  try {
+    const positions = collectPositions()
+    await updateGraphPositions(props.courseId, positions)
+    successMsg.value = '布局已保存'
+  } catch (err) {
+    error.value = err.message || '保存布局失败'
+  } finally {
+    saving.value = false
+  }
+}
+
+function autoLayout() {
+  if (!cy) return
+  cy.layout({
+    name: 'cose',
+    padding: 16,
+    animate: true,
+    componentSpacing: 60,
+    nodeRepulsion: 400000,
+    idealEdgeLength: 80
+  }).run()
 }
 
 function startCreateNode() {
@@ -293,6 +345,8 @@ async function removeEdge() {
         <button class="tool-btn danger" type="button" :disabled="!selectedNode" @click="removeNode">删除节点</button>
         <button class="tool-btn" type="button" :disabled="!graph?.nodes?.length" @click="startCreateEdge">添加先修边</button>
         <button class="tool-btn danger" type="button" :disabled="!selectedEdge" @click="removeEdge">删除选中边</button>
+        <button class="tool-btn" type="button" :disabled="saving" @click="saveLayout">{{ saving ? '保存中…' : '保存布局' }}</button>
+        <button class="tool-btn" type="button" :disabled="!graph?.nodes?.length" @click="autoLayout">自动布局</button>
         <button class="tool-btn" type="button" @click="loadGraph">刷新</button>
       </div>
     </div>

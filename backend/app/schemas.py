@@ -73,6 +73,8 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[Message] = Field(..., min_length=1, max_length=50)
     room_slug: Optional[str] = Field(None, examples=["room-abc123"])
+    room_password: Optional[str] = Field(None, examples=["secret123"])
+    session_id: Optional[str] = Field(None, examples=["session-uuid"])
     video_id: Optional[str] = Field(None, examples=["video-uuid"])
     screenshot: Optional[str] = Field(
         None, examples=["data:image/png;base64,..."]
@@ -147,6 +149,8 @@ class KnowledgeNodeUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = Field(None, max_length=2000)
     threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
+    position_x: Optional[float] = None
+    position_y: Optional[float] = None
 
 
 class KnowledgeNodeResponse(BaseModel):
@@ -155,6 +159,8 @@ class KnowledgeNodeResponse(BaseModel):
     name: str
     description: Optional[str]
     threshold: float
+    position_x: Optional[float] = None
+    position_y: Optional[float] = None
 
 
 class KnowledgeEdgeCreate(BaseModel):

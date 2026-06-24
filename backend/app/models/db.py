@@ -122,6 +122,8 @@ class KnowledgeNode(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     threshold: Mapped[float] = mapped_column(Float, default=0.8)
     neo4j_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    position_x: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    position_y: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     embedding = _vector_column()
     created_at: Mapped[datetime] = mapped_column(default=now_utc)
 

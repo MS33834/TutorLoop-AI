@@ -43,33 +43,6 @@ watch(() => user.isLoggedIn, () => {
   loadReport()
 })
 
-async function loadReport() {
-  if (!user.isLoggedIn) {
-    error.value = '请先登录'
-    report.value = null
-    return
-  }
-  if (!props.courseId) {
-    error.value = '缺少课程 ID'
-    report.value = null
-    return
-  }
-  loading.value = true
-  error.value = ''
-  try {
-    const [data, tl] = await Promise.all([
-      apiFetch(`/api/users/me/report?course_id=${encodeURIComponent(props.courseId)}`),
-      loadTimeline()
-    ])
-    report.value = data
-  } catch (err) {
-    error.value = err.message || '报告暂时无法加载，稍后再来看看'
-    report.value = null
-  } finally {
-    loading.value = false
-  }
-}
-
 async function loadTimeline() {
   timelineLoading.value = true
   timelineError.value = ''
@@ -218,8 +191,120 @@ const masteryChartOptions = {
   }
 }
 
+const CACHE_KEY = (courseId) => `tutorloop-report-${courseId}`
+
+function cacheReport(data) {
+  try {
+    localStorage.setItem(CACHE_KEY(props.courseId), JSON.stringify({
+      savedAt: new Date().toISOString(),
+      data
+    }))
+  } catch (err) {
+    // Silently ignore storage errors (e.g. private mode, quota exceeded).
+  }
+}
+
+function loadCachedReport() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY(props.courseId))
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    return parsed.data || null
+  } catch (err) {
+    return null
+  }
+}
+
+async function loadReport() {
+  if (!user.isLoggedIn) {
+    error.value = '请先登录'
+    report.value = null
+    return
+  }
+  if (!props.courseId) {
+    error.value = '缺少课程 ID'
+    report.value = null
+    return
+  }
+  loading.value = true
+  error.value = ''
+  try {
+    report.value = await apiFetch(
+      `/api/users/me/report?course_id=${encodeURIComponent(props.courseId)}`
+    )
+    cacheReport(report.value)
+    // Load timeline independently so a timeline failure does not mask the report.
+    loadTimeline()
+  } catch (err) {
+    error.value = err.message || '报告暂时无法加载，稍后再来看看'
+    const cached = loadCachedReport()
+    if (cached) {
+      report.value = cached
+      error.value = '已显示本地缓存的报告显示，数据可能不是最新的。'
+    } else {
+      report.value = null
+    }
+  } finally {
+    loading.value = false
+  }
+}
+
 function exportReport() {
-  alert('导出功能即将上线，可先截图分享当前报告。')
+  const printWindow = window.open('', '_blank')
+  if (!printWindow) {
+    alert('请允许弹窗，以便导出报告。')
+    return
+  }
+
+  const title = report.value?.course_title || '学习报告'
+  const items = (report.value?.mastery_items || [])
+    .map((item) => `
+      <tr>
+        <td>${item.name}</td>
+        <td>${formatPercent(item.p_known)}</td>
+        <td>${formatPercent(item.threshold)}</td>
+      </tr>
+    `).join('')
+
+  const html = `
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+      <meta charset="utf-8">
+      <title>${title}</title>
+      <style>
+        body { font-family: system-ui, -apple-system, sans-serif; color: #111827; padding: 2rem; }
+        h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+        .meta { color: #6b7280; margin-bottom: 1.5rem; }
+        .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+        .card { border: 1px solid #e5e7eb; border-radius: 0.75rem; padding: 1rem; text-align: center; }
+        .card .value { font-size: 1.25rem; font-weight: 700; }
+        .card .label { color: #6b7280; font-size: 0.875rem; }
+        table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+        th, td { border-bottom: 1px solid #e5e7eb; padding: 0.625rem; text-align: left; }
+        th { color: #6b7280; font-weight: 500; }
+      </style>
+    </head>
+    <body>
+      <h1>${title}</h1>
+      <p class="meta">生成时间：${formatDate(report.value?.generated_at)}</p>
+      <div class="summary">
+        <div class="card"><div class="value">${formatPercent(report.value?.summary?.average_mastery)}</div><div class="label">平均掌握度</div></div>
+        <div class="card"><div class="value">${formatPercent(report.value?.summary?.accuracy)}</div><div class="label">正确率</div></div>
+        <div class="card"><div class="value">${report.value?.summary?.interaction_count ?? 0}</div><div class="label">交互次数</div></div>
+      </div>
+      <h2>掌握度明细</h2>
+      <table>
+        <thead><tr><th>知识点</th><th>掌握度</th><th>阈值</th></tr></thead>
+        <tbody>${items}</tbody>
+      </table>
+    </body>
+    </html>
+  `
+  printWindow.document.write(html)
+  printWindow.document.close()
+  printWindow.focus()
+  printWindow.print()
 }
 </script>
 

@@ -14,11 +14,12 @@ from sqlalchemy import select
 from app.db.postgres import AsyncSessionLocal
 from app.gateway import pool, stream_chat
 from app.limiter import limiter
-from app.models.db import Room, User
+from app.models.db import Room, RoomEntrySession, User
 from app.schemas import ChatRequest, HealthResponse, KeyHealthSummary
+from app.services import bkt_engine
 from app.services.auth_service import get_optional_current_user
 from app.services.rag_service import retrieve_context
-from app.services.socratic_agent import build_socratic_messages
+from app.services.socratic_agent import assess_answer, build_socratic_messages, looks_like_answer
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,52 @@ async def _resolve_room_for_anonymous(room_slug: str | None) -> Room | None:
             )
         if not room.allow_anonymous:
             raise HTTPException(status_code=401, detail="该房间需要登录后才能访问")
+        return room
+
+
+async def _resolve_room_for_authenticated(
+    room_slug: str | None,
+    current_user: User,
+    password: str | None,
+    session_id: str | None,
+) -> Room | None:
+    """Validate room slug for an authenticated user, enforcing password/ownership."""
+    if not room_slug:
+        return None
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Room).where(Room.slug == room_slug, Room.is_active == True)  # noqa: E712
+        )
+        room = result.scalar_one_or_none()
+        if room is None:
+            raise HTTPException(status_code=404, detail="房间不存在或已关闭")
+        if room.expires_at and room.expires_at <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=410, detail="房间已过期")
+
+        # Owners and admins bypass the password check.
+        is_owner_or_admin = (
+            room.created_by == current_user.id or current_user.role == "admin"
+        )
+        if not is_owner_or_admin and room.password_hash:
+            # Accept an already-joined session as proof of access.
+            has_valid_session = False
+            if session_id:
+                session_result = await session.execute(
+                    select(RoomEntrySession).where(
+                        RoomEntrySession.room_id == room.id,
+                        RoomEntrySession.session_id == session_id,
+                    )
+                )
+                has_valid_session = session_result.scalar_one_or_none() is not None
+
+            if not has_valid_session:
+                from app.services.auth_service import verify_password
+
+                if not password:
+                    raise HTTPException(status_code=403, detail="该房间需要密码")
+                if not verify_password(password, room.password_hash):
+                    raise HTTPException(status_code=403, detail="房间密码错误")
+
         return room
 
 
@@ -101,6 +148,66 @@ def _format_context(ctx: dict) -> str:
     return "\n".join(lines)
 
 
+async def _record_mastery_after_chat(
+    user_id: str | None,
+    course_id: str | None,
+    video_id: str | None,
+    node_id: str | None,
+    node_name: str | None,
+    context_text: str | None,
+    student_answer: str | None,
+    request: ChatRequest,
+) -> None:
+    """Best-effort assessment and BKT update after a Socratic turn.
+
+    Runs after the SSE stream so the user is never blocked by the extra LLM
+    call. Failures are logged and swallowed to avoid breaking the chat flow.
+    """
+    if not user_id or not course_id or not node_id:
+        return
+    if not student_answer or not looks_like_answer(student_answer):
+        return
+
+    try:
+        assessment = await assess_answer(
+            question_context=context_text or node_name or "",
+            student_answer=student_answer,
+            node_name=node_name,
+        )
+    except Exception as exc:
+        logger.warning("Answer assessment failed: %s", exc)
+        return
+
+    is_correct = assessment.get("is_correct")
+    if is_correct is None:
+        return
+
+    try:
+        await bkt_engine.record_interaction(
+            user_id=user_id,
+            course_id=course_id,
+            video_id=video_id,
+            video_timestamp=request.timestamp,
+            question_text=request.messages[-1].content if request.messages else None,
+            answer_text=student_answer,
+            is_correct=is_correct,
+            node_id=node_id,
+        )
+        await bkt_engine.update_mastery(
+            user_id=user_id,
+            node_id=node_id,
+            is_correct=is_correct,
+        )
+        logger.info(
+            "Updated mastery for user=%s node=%s is_correct=%s",
+            user_id,
+            node_id,
+            is_correct,
+        )
+    except Exception as exc:
+        logger.warning("Mastery update after chat failed: %s", exc)
+
+
 async def _sse_event_stream(request: ChatRequest, user_id: str | None, course_id: str | None):
     messages = [m.model_dump() for m in request.messages]
     context_text: str | None = None
@@ -108,6 +215,12 @@ async def _sse_event_stream(request: ChatRequest, user_id: str | None, course_id
     node_id: str | None = None
     screenshot_path: str | None = None
     has_screenshot = False
+    student_answer: str | None = None
+
+    if request.messages:
+        last_msg = request.messages[-1]
+        if last_msg.role == "user":
+            student_answer = last_msg.content
 
     if request.video_id and (request.screenshot or request.timestamp is not None):
         screenshot_path = _save_screenshot_if_any(request.screenshot)
@@ -173,6 +286,21 @@ async def _sse_event_stream(request: ChatRequest, user_id: str | None, course_id
         async for chunk in stream_chat(socratic_messages, model_type=model_type):
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
+
+        # After the stream finishes, assess the student's answer and update
+        # mastery when in Socratic mode. This only runs when no exception
+        # interrupted the response.
+        if not request.need_answer:
+            await _record_mastery_after_chat(
+                user_id=user_id,
+                course_id=course_id,
+                video_id=request.video_id,
+                node_id=node_id,
+                node_name=node_name,
+                context_text=context_text,
+                student_answer=student_answer,
+                request=request,
+            )
     finally:
         # Clean up the screenshot temp file now that streaming is done.
         if screenshot_path:

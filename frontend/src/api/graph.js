@@ -36,3 +36,10 @@ export function deleteKnowledgeEdge(edgeId) {
     method: 'DELETE'
   })
 }
+
+export function updateGraphPositions(courseId, positions) {
+  return apiFetch(`/api/courses/${encodeURIComponent(courseId)}/graph-positions`, {
+    method: 'PATCH',
+    body: JSON.stringify(positions)
+  })
+}

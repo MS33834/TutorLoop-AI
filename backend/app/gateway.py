@@ -78,14 +78,28 @@ class KeyPool:
                 return multi_keys
         return candidates
 
+    def _success_rate(self, key_info: KeyInfo) -> float:
+        """Return a smoothed success rate based on recent error count."""
+        return 1.0 / (1.0 + key_info.error_count)
+
     def select_key(self, model_type: str = "text", exclude: set[int] | None = None) -> KeyInfo | None:
+        """Select a key using weighted random selection.
+
+        Weight = (remaining_quota / avg_rtt_ms) * success_rate^2.
+        Quota favours keys with more budget, RTT favours fast keys, and the
+        squared success rate aggressively penalises recently failing keys.
+        """
         exclude = exclude or set()
         healthy = [k for k in self._healthy_keys(model_type) if id(k) not in exclude]
         if not healthy:
             return None
-        weights = [
-            max(1.0, k.remaining_quota) / max(1.0, k.avg_rtt_ms) for k in healthy
-        ]
+        weights = []
+        for k in healthy:
+            quota_factor = max(1.0, k.remaining_quota)
+            rtt_factor = max(1.0, k.avg_rtt_ms)
+            success_factor = self._success_rate(k) ** 2
+            weights.append(quota_factor / rtt_factor * success_factor)
+
         total = sum(weights)
         if total <= 0:
             return random.choice(healthy)
@@ -119,6 +133,22 @@ class KeyPool:
             key_info.avg_rtt_ms = (
                 RTT_EWMA_ALPHA * rtt_ms + (1 - RTT_EWMA_ALPHA) * key_info.avg_rtt_ms
             )
+
+    async def probe_keys(self) -> None:
+        """Run lightweight health checks on all keys and update their status."""
+        for key_info in self.keys:
+            start = time.perf_counter()
+            try:
+                health = await key_info.provider.health_check()
+                rtt_ms = (time.perf_counter() - start) * 1000
+                if health.get("status") == "healthy":
+                    self.mark_healthy(key_info, rtt_ms=rtt_ms)
+                else:
+                    self.mark_degraded(
+                        key_info, reason=health.get("reason", "unhealthy probe")
+                    )
+            except Exception as exc:
+                self.mark_degraded(key_info, reason=str(exc))
 
     def summary(self) -> list[dict[str, Any]]:
         return [
@@ -333,3 +363,36 @@ async def chat_completion(
         messages=messages,
         model=settings.local_model,
     )
+
+
+# Background health-probe task. Started in app.main on application startup and
+# cancelled on shutdown so the gateway can recover degraded/offline keys
+# without waiting for a user request.
+_health_probe_task: asyncio.Task | None = None
+
+
+async def _health_probe_loop(interval_seconds: float = 60.0) -> None:
+    """Periodically probe all keys and refresh their health status."""
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            await pool.probe_keys()
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning("Health probe loop error: %s", exc)
+
+
+def start_health_probe(interval_seconds: float = 60.0) -> None:
+    """Start the periodic key health probe (idempotent)."""
+    global _health_probe_task
+    if _health_probe_task is not None and not _health_probe_task.done():
+        return
+    _health_probe_task = asyncio.create_task(_health_probe_loop(interval_seconds))
+
+
+def stop_health_probe() -> None:
+    """Cancel the periodic key health probe."""
+    global _health_probe_task
+    if _health_probe_task is not None and not _health_probe_task.done():
+        _health_probe_task.cancel()

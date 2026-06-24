@@ -759,6 +759,8 @@ async def get_course_graph(course_id: str):
                 "name": n.name,
                 "description": n.description or "",
                 "threshold": n.threshold,
+                "position_x": n.position_x,
+                "position_y": n.position_y,
             }
             for n in nodes
         ],
@@ -817,6 +819,8 @@ async def create_knowledge_node(
         name=node.name,
         description=node.description,
         threshold=node.threshold,
+        position_x=node.position_x,
+        position_y=node.position_y,
     )
 
 
@@ -826,7 +830,7 @@ async def update_knowledge_node(
     body: KnowledgeNodeUpdate,
     current_user: User = Depends(get_current_active_user),  # noqa: B008
 ):
-    """Update a knowledge node's name, description or threshold."""
+    """Update a knowledge node's name, description, threshold or position."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(KnowledgeNode).where(KnowledgeNode.id == node_id))
         node = result.scalar_one_or_none()
@@ -844,6 +848,10 @@ async def update_knowledge_node(
             text_changed = True
         if body.threshold is not None:
             node.threshold = body.threshold
+        if body.position_x is not None:
+            node.position_x = body.position_x
+        if body.position_y is not None:
+            node.position_y = body.position_y
 
         if text_changed:
             node.embedding = encode_text(f"{node.name} {node.description or ''}".strip())
@@ -857,7 +865,54 @@ async def update_knowledge_node(
         name=node.name,
         description=node.description,
         threshold=node.threshold,
+        position_x=node.position_x,
+        position_y=node.position_y,
     )
+
+
+class _NodePositionUpdate(BaseModel):
+    node_id: str
+    position_x: float
+    position_y: float
+
+
+@router.patch("/api/courses/{course_id}/graph-positions")
+async def update_graph_positions(
+    course_id: str,
+    body: list[_NodePositionUpdate],
+    current_user: User = Depends(get_current_active_user),  # noqa: B008
+):
+    """Bulk update node positions for the course graph layout.
+
+    This endpoint is used by the graph editor after a teacher drags nodes
+    to a desired layout.
+    """
+    await _require_course_owner(course_id, current_user)
+
+    if not body:
+        return {"updated": 0}
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(KnowledgeNode).where(
+                KnowledgeNode.course_id == course_id,
+                KnowledgeNode.id.in_([item.node_id for item in body]),
+            )
+        )
+        nodes = {node.id: node for node in result.scalars().all()}
+
+        updated = 0
+        for item in body:
+            node = nodes.get(item.node_id)
+            if node is None:
+                continue
+            node.position_x = item.position_x
+            node.position_y = item.position_y
+            updated += 1
+
+        await session.commit()
+
+    return {"updated": updated}
 
 
 @router.delete("/api/nodes/{node_id}")
