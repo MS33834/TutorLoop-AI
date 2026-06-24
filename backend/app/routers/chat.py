@@ -18,6 +18,7 @@ from app.models.db import Room, User
 from app.schemas import ChatRequest, HealthResponse, KeyHealthSummary
 from app.services.auth_service import get_optional_current_user
 from app.services.rag_service import retrieve_context
+from app.services.socratic_agent import build_socratic_messages
 
 logger = logging.getLogger(__name__)
 
@@ -96,11 +97,17 @@ def _format_context(ctx: dict) -> str:
     return "\n".join(lines)
 
 
-async def _sse_event_stream(request: ChatRequest):
+async def _sse_event_stream(request: ChatRequest, user_id: str | None, course_id: str | None):
     messages = [m.model_dump() for m in request.messages]
+    context_text: str | None = None
+    node_name: str | None = None
+    node_id: str | None = None
+    screenshot_path: str | None = None
+    has_screenshot = False
 
     if request.video_id and (request.screenshot or request.timestamp is not None):
         screenshot_path = _save_screenshot_if_any(request.screenshot)
+        has_screenshot = screenshot_path is not None
         try:
             ctx = await retrieve_context(
                 video_id=request.video_id,
@@ -109,16 +116,51 @@ async def _sse_event_stream(request: ChatRequest):
                 timestamp=request.timestamp,
             )
             context_text = _format_context(ctx)
-            messages.insert(0, {"role": "system", "content": context_text})
+            # Use the top knowledge node (if any) to adapt the Socratic prompt.
+            nodes = ctx.get("knowledge_nodes") or []
+            if nodes:
+                node_id = nodes[0].get("id")
+                node_name = nodes[0].get("name")
         except Exception as exc:
             logger.warning("RAG context retrieval failed: %s", exc)
-        finally:
-            if screenshot_path and Path(screenshot_path).exists():
-                Path(screenshot_path).unlink(missing_ok=True)
+        # NOTE: screenshot_path is NOT deleted here when has_screenshot is
+        # True, because it must survive until the VLM request completes.
+        # It is deleted after streaming finishes (or on error) below.
 
-    async for chunk in stream_chat(messages, model_type="text"):
-        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-    yield "data: [DONE]\n\n"
+    # Wrap the user messages with a Socratic system prompt adapted to the
+    # student's current mastery on the relevant knowledge node.
+    socratic_messages = await build_socratic_messages(
+        messages=messages,
+        user_id=user_id,
+        course_id=course_id,
+        node_id=node_id,
+        context_text=context_text,
+        node_name=node_name,
+    )
+
+    # When a screenshot is present, route to the vision model and attach the
+    # screenshot as an image content block on the latest user message so the
+    # VLM can actually "see" what the student is asking about.
+    model_type = "vision" if has_screenshot else "text"
+    if has_screenshot and screenshot_path and socratic_messages:
+        last = socratic_messages[-1]
+        if last.get("role") == "user":
+            last["content"] = [
+                {"type": "text", "text": last.get("content", "")},
+                {"type": "image_path", "path": screenshot_path},
+            ]
+
+    try:
+        async for chunk in stream_chat(socratic_messages, model_type=model_type):
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+    finally:
+        # Clean up the screenshot temp file now that streaming is done.
+        if screenshot_path:
+            try:
+                Path(screenshot_path).unlink(missing_ok=True)
+            except Exception as exc:
+                logger.warning("Could not delete screenshot %s: %s", screenshot_path, exc)
 
 
 @router.post("/api/chat")
@@ -133,12 +175,28 @@ async def chat(
     if len(body.messages) > 50:
         raise HTTPException(status_code=422, detail="消息数量超出限制")
 
+    user_id = current_user.id if current_user else None
+    course_id: str | None = None
+
     # Anonymous users must provide a room slug pointing to an anonymous-enabled room.
     if current_user is None:
-        await _resolve_room_for_anonymous(body.room_slug)
+        room = await _resolve_room_for_anonymous(body.room_slug)
+        if room is not None:
+            course_id = room.course_id
+    else:
+        # Resolve course_id from the room slug for authenticated users too,
+        # so the Socratic agent can look up mastery.
+        if body.room_slug:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(Room).where(Room.slug == body.room_slug, Room.is_active == True)  # noqa: E712
+                )
+                room = result.scalar_one_or_none()
+                if room is not None:
+                    course_id = room.course_id
 
     return StreamingResponse(
-        _sse_event_stream(body),
+        _sse_event_stream(body, user_id, course_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

@@ -6,10 +6,16 @@ from urllib.parse import unquote, urlparse
 
 from arq import create_pool
 from arq.connections import RedisSettings
+from arq.cron import cron
 
 from app.db.neo4j import close_driver
 from app.db.postgres import close_db, init_db
-from app.tasks.jobs import build_knowledge_graph_task, process_video_task
+from app.tasks.jobs import (
+    build_knowledge_graph_task,
+    cleanup_screenshots_task,
+    probe_keys_health_task,
+    process_video_task,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +74,20 @@ class WorkerSettings:
     redis_settings = _redis_settings()
     on_startup = on_startup
     on_shutdown = on_shutdown
-    functions = [process_video_task, build_knowledge_graph_task]
+    functions = [
+        process_video_task,
+        build_knowledge_graph_task,
+        cleanup_screenshots_task,
+        probe_keys_health_task,
+    ]
     max_jobs = int(os.environ.get("ARQ_MAX_JOBS", "10"))
     job_timeout = int(os.environ.get("ARQ_JOB_TIMEOUT", "600"))
     keep_result = int(os.environ.get("ARQ_KEEP_RESULT", "3600"))
+
+    # Scheduled jobs (cron). Times are in UTC.
+    cron_jobs = [
+        # Delete expired screenshot temp files daily at 03:00 UTC.
+        cron(cleanup_screenshots_task, hour=3, minute=0),
+        # Probe AI key health every 30 seconds (TechSpec §3.1 heartbeat).
+        cron(probe_keys_health_task, second={0, 30}),
+    ]

@@ -19,6 +19,9 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer(auto_error=False)
 
 ALGORITHM = "HS256"
+ACCESS_TOKEN_TYPE = "access"
+REFRESH_TOKEN_TYPE = "refresh"
+REFRESH_TOKEN_EXPIRE_DAYS = 30
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -33,7 +36,20 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode = data.copy()
     now = datetime.now(UTC)
     expire = now + (expires_delta or timedelta(minutes=settings.access_token_expire_minutes))
-    to_encode.update({"exp": expire, "iat": now, "type": "access"})
+    to_encode.update({"exp": expire, "iat": now, "type": ACCESS_TOKEN_TYPE})
+    return jwt.encode(to_encode, settings.secret_key, algorithm=ALGORITHM)
+
+
+def create_refresh_token(data: dict) -> str:
+    """Create a long-lived refresh token (30 days) for silent token renewal.
+
+    The refresh token carries the same subject as the access token but is
+    tagged with type='refresh' so it cannot be mistaken for an access token.
+    """
+    to_encode = data.copy()
+    now = datetime.now(UTC)
+    expire = now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire, "iat": now, "type": REFRESH_TOKEN_TYPE})
     return jwt.encode(to_encode, settings.secret_key, algorithm=ALGORITHM)
 
 
@@ -55,6 +71,30 @@ def _decode_token(token: str) -> dict:
     return payload
 
 
+def decode_access_token(token: str) -> dict:
+    """Decode and validate an access token, enforcing its type claim."""
+    payload = _decode_token(token)
+    if payload.get("type") != ACCESS_TOKEN_TYPE:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="登录凭据类型错误，请重新登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return payload
+
+
+def decode_refresh_token(token: str) -> dict:
+    """Decode and validate a refresh token, enforcing its type claim."""
+    payload = _decode_token(token)
+    if payload.get("type") != REFRESH_TOKEN_TYPE:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="刷新凭据类型错误",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return payload
+
+
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> User:
@@ -65,7 +105,7 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    payload = _decode_token(credentials.credentials)
+    payload = decode_access_token(credentials.credentials)
     user_id: Optional[str] = payload.get("sub")
     if not user_id:
         raise HTTPException(
@@ -108,7 +148,7 @@ async def get_optional_current_user(
     if not credentials or not credentials.credentials:
         return None
     try:
-        payload = _decode_token(credentials.credentials)
+        payload = decode_access_token(credentials.credentials)
     except HTTPException as exc:
         logger.debug("Optional auth token rejected: %s", exc.detail)
         return None
