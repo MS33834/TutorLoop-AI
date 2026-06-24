@@ -89,6 +89,21 @@ def test_create_access_token_includes_expiry():
     assert payload["exp"] > 0
 
 
+def test_create_access_token_includes_iat_claim():
+    """The token must include an 'iat' (issued-at) timestamp."""
+    token = create_access_token({"sub": "user-123"})
+    payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
+    assert "iat" in payload
+    assert payload["iat"] > 0
+
+
+def test_create_access_token_includes_type_claim():
+    """The token must include a 'type' claim set to 'access'."""
+    token = create_access_token({"sub": "user-123"})
+    payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
+    assert payload.get("type") == "access"
+
+
 def test_create_access_token_respects_custom_expiry():
     from datetime import timedelta
 

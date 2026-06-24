@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.gateway import KeyPool, _is_retryable
+from app.gateway import KeyPool, _get_local_provider, _is_retryable
 from app.services.model_providers import (
     AuthenticationError,
     InsufficientBalanceError,
@@ -170,3 +170,30 @@ def test_is_retryable_none():
 
 def test_is_retryable_generic_exception():
     assert _is_retryable(ValueError("oops")) is False
+
+
+def test_get_local_provider_returns_same_instance():
+    """_get_local_provider must return the same shared instance on repeated calls."""
+    # Reset the module-level cache to ensure a clean state.
+    import app.gateway as gateway_mod
+
+    gateway_mod._local_provider = None
+    p1 = _get_local_provider()
+    p2 = _get_local_provider()
+    assert p1 is p2
+
+
+@pytest.mark.asyncio
+async def test_close_local_provider_clears_cache():
+    """close_local_provider must reset the shared provider so the next call
+    to _get_local_provider creates a fresh instance."""
+    import app.gateway as gateway_mod
+
+    gateway_mod._local_provider = None
+    p1 = _get_local_provider()
+    # Inject a mock aclose so we can verify it's called.
+    p1.aclose = AsyncMock()
+    await gateway_mod.close_local_provider()
+    assert gateway_mod._local_provider is None
+    p2 = _get_local_provider()
+    assert p2 is not p1
