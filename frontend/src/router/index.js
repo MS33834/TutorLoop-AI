@@ -23,27 +23,27 @@ const routes = [
     path: '/upload',
     name: 'upload',
     component: UploadView,
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, requiresTeacher: true }
   },
   {
     path: '/dashboard',
     name: 'dashboard',
     component: TeacherDashboard,
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, requiresTeacher: true }
   },
   {
     path: '/class-report/:courseId',
     name: 'class-report',
     component: ClassReportView,
     props: true,
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, requiresTeacher: true }
   },
   {
     path: '/graph/:courseId',
     name: 'graph',
     component: GraphView,
     props: true,
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, requiresTeacher: true }
   },
   {
     path: '/report/:courseId',
@@ -66,11 +66,26 @@ const router = createRouter({
 
 router.beforeEach((to, from, next) => {
   const userStore = useUserStore()
+
+  // Auth-required routes: redirect to login with return path.
   if (to.meta.requiresAuth && !userStore.isLoggedIn) {
     next({ name: 'login', query: { redirect: to.fullPath } })
-  } else {
-    next()
+    return
   }
+
+  // Teacher/admin-only routes: students get redirected to home.
+  if (to.meta.requiresTeacher && !userStore.isTeacher) {
+    next({ name: 'home' })
+    return
+  }
+
+  // Redirect logged-in users away from the login page.
+  if (to.name === 'login' && userStore.isLoggedIn) {
+    next({ name: 'home' })
+    return
+  }
+
+  next()
 })
 
 export default router

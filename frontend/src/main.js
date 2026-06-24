@@ -22,6 +22,21 @@ if (import.meta.env.VITE_SENTRY_DSN) {
   })
 }
 
+// Catch unhandled promise rejections so they don't silently disappear.
+// This covers fetch/abort failures in async code paths that lack try/catch.
+window.addEventListener('unhandledrejection', (event) => {
+  // AbortErrors from cancelled fetches (e.g. navigating away mid-request)
+  // are expected and should not be reported.
+  if (event.reason?.name === 'AbortError') {
+    event.preventDefault()
+    return
+  }
+  console.error('Unhandled promise rejection:', event.reason)
+  if (import.meta.env.VITE_SENTRY_DSN) {
+    Sentry.captureException(event.reason)
+  }
+})
+
 app.use(createPinia())
 app.use(router)
 

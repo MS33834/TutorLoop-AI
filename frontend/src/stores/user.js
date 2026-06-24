@@ -14,10 +14,35 @@ function loadJson(key, fallback) {
   }
 }
 
+/**
+ * Decode a JWT payload without verifying (client-side expiry check only).
+ * Returns null if the token is malformed.
+ */
+function decodeJwtPayload(token) {
+  if (!token || typeof token !== 'string') return null
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
+  try {
+    const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const json = atob(payload)
+    return JSON.parse(json)
+  } catch {
+    return null
+  }
+}
+
+function isTokenExpired(token) {
+  const payload = decodeJwtPayload(token)
+  if (!payload || !payload.exp) return false
+  // Treat tokens expiring within the next 30 seconds as expired to avoid
+  // race conditions where the token expires mid-request.
+  return payload.exp * 1000 <= Date.now() + 30000
+}
+
 export const useUserStore = defineStore('user', () => {
   const token = ref(loadJson(TOKEN_KEY, ''))
   const user = ref(loadJson(USER_KEY, null))
-  const isLoggedIn = computed(() => Boolean(token.value && user.value?.id))
+  const isLoggedIn = computed(() => Boolean(token.value && user.value?.id && !isTokenExpired(token.value)))
 
   function setAuth(newToken, newUser) {
     token.value = newToken
@@ -43,6 +68,11 @@ export const useUserStore = defineStore('user', () => {
 
   async function fetchProfile() {
     if (!token.value) return
+    // Don't attempt to fetch if the token is already expired.
+    if (isTokenExpired(token.value)) {
+      clearAuth()
+      return
+    }
     try {
       const profile = await apiFetch('/api/auth/me')
       user.value = profile
@@ -51,8 +81,12 @@ export const useUserStore = defineStore('user', () => {
       } catch {
         // ignore
       }
-    } catch {
-      clearAuth()
+    } catch (err) {
+      // Only clear auth on 401/403 (actual auth failures), not on network
+      // errors or server failures — those shouldn't log the user out.
+      if (err.code === 'UNAUTHORIZED' || err.status === 403) {
+        clearAuth()
+      }
     }
   }
 
@@ -71,6 +105,9 @@ export const useUserStore = defineStore('user', () => {
     user,
     isLoggedIn,
     userId: computed(() => user.value?.id || ''),
+    userRole: computed(() => user.value?.role || ''),
+    isAdmin: computed(() => user.value?.role === 'admin'),
+    isTeacher: computed(() => user.value?.role === 'teacher' || user.value?.role === 'admin'),
     setAuth,
     clearAuth,
     fetchProfile
