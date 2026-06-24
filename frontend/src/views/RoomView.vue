@@ -58,6 +58,7 @@ const roomAccessGranted = ref(false)
 const roomSessionId = ref('')
 
 let streamAbortController = null
+let streamReader = null
 let isUnmounted = false
 
 const courseId = computed(() => course.value?.id || '')
@@ -94,6 +95,12 @@ function cancelStream() {
   if (streamAbortController) {
     streamAbortController.abort()
     streamAbortController = null
+  }
+  // Also cancel the underlying reader to release the stream immediately,
+  // even if the abort signal hasn't propagated yet.
+  if (streamReader) {
+    streamReader.cancel().catch(() => {})
+    streamReader = null
   }
 }
 
@@ -392,6 +399,7 @@ async function send() {
     }
 
     const reader = response.body.getReader()
+    streamReader = reader
     const decoder = new TextDecoder('utf-8')
     let buffer = ''
 
@@ -438,6 +446,7 @@ async function send() {
   } finally {
     loading.value = false
     streamAbortController = null
+    streamReader = null
     screenshot.value = ''
     await scrollToBottom()
   }

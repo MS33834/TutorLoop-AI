@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 
 const props = defineProps({
   src: { type: String, default: '' },
@@ -85,7 +85,17 @@ function takeScreenshot() {
   canvas.width = video.value.videoWidth || 640
   canvas.height = video.value.videoHeight || 360
   const ctx = canvas.getContext('2d')
-  ctx.drawImage(video.value, 0, 0, canvas.width, canvas.height)
+  if (!ctx) {
+    // getContext can return null when the context is unavailable (e.g. in
+    // some privacy/incognito modes or when GPU resources are exhausted).
+    return
+  }
+  try {
+    ctx.drawImage(video.value, 0, 0, canvas.width, canvas.height)
+  } catch {
+    // drawImage can throw if the video frame is not yet available.
+    return
+  }
   const dataURL = canvas.toDataURL('image/jpeg', 0.9)
   emit('screenshot', dataURL)
 }
@@ -111,6 +121,10 @@ watch(() => props.src, () => {
   currentTime.value = 0
   duration.value = 0
   buffered.value = 0
+})
+
+onBeforeUnmount(() => {
+  clearTimeout(controlsTimer)
 })
 
 defineExpose({
