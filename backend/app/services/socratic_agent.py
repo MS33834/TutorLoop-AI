@@ -199,12 +199,17 @@ async def assess_answer(
     question_context: str,
     student_answer: str,
     node_name: str | None = None,
+    question: str | None = None,
 ) -> dict[str, Any]:
     """Use the LLM to assess whether a student's answer is correct.
 
     Returns a dict with ``is_correct`` (bool or None), ``confidence`` (float),
     and ``feedback`` (str). This lets the chat flow update BKT mastery without
     requiring a separate frontend action.
+
+    ``question`` is the Socratic question the student is replying to (typically
+    the previous assistant turn). Without it the LLM cannot know what the
+    student is answering, so the assessment is unreliable.
     """
     if not student_answer or not student_answer.strip():
         return {"is_correct": False, "confidence": 1.0, "feedback": "回答为空。"}
@@ -212,6 +217,8 @@ async def assess_answer(
     context_parts = []
     if node_name:
         context_parts.append(f"知识点：{node_name}")
+    if question:
+        context_parts.append(f"导师提问：{question}")
     if question_context:
         context_parts.append(question_context)
     context = "\n".join(context_parts) or "请评估以下学生回答。"
@@ -234,6 +241,11 @@ async def assess_answer(
         return {"is_correct": None, "confidence": 0.0, "feedback": "无法评估回答。"}
 
     is_correct = data.get("is_correct")
+    # An explicit JSON null means the model could not decide. Returning None
+    # here lets the caller skip the BKT update instead of recording a wrong
+    # answer (which would happen if we coerced null -> False).
+    if is_correct is None:
+        return {"is_correct": None, "confidence": 0.0, "feedback": "无法判断回答正误。"}
     if not isinstance(is_correct, bool):
         # Tolerate string values from less strict models.
         lowered = str(is_correct).lower()

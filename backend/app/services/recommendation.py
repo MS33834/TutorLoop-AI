@@ -237,7 +237,10 @@ async def recommend_next(user_id: str, course_id: str) -> dict | None:
             "video_id": frame["video_id"] if frame else None,
             "timestamp_seconds": frame["timestamp_seconds"] if frame else None,
             "reason": (
-                "这个知识点掌握得最不牢固，建议优先攻克。"
+                f"「{candidate['name']}」当前掌握度 {candidate['p_known']:.0%}，"
+                f"阈值 {candidate['threshold']:.0%}，"
+                f"差距 {candidate['threshold'] - candidate['p_known']:.2f}，"
+                f"建议优先攻克。"
             ),
         }
 
@@ -289,5 +292,9 @@ async def recommend_next(user_id: str, course_id: str) -> dict | None:
         },
         "video_id": frame["video_id"] if frame else None,
         "timestamp_seconds": frame["timestamp_seconds"] if frame else None,
-        "reason": "这个知识点还没掌握，且先修内容已学完，正是攻克它的好时机。",
+        "reason": (
+            f"「{best_node.get('name')}」当前掌握度 {best_record.get('p_known', 0.0):.0%}，"
+            f"阈值 {best_record.get('threshold', 0.8):.0%}，"
+            f"先修内容已学完，正是攻克它的好时机。"
+        ),
     }

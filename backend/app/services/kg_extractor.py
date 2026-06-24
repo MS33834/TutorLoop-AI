@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -176,19 +176,25 @@ async def _persist_frame_captions(
         return
 
     path_to_frame = {f.file_path: f for f in frames if f.file_path}
-    updates: list[tuple[VideoFrame, str]] = []
+    updates: list[tuple[str, str]] = []
     for path, caption in zip(frame_paths, captions, strict=False):
         frame = path_to_frame.get(path)
-        if frame is not None:
-            updates.append((frame, caption))
+        if frame is not None and frame.id is not None:
+            updates.append((frame.id, caption))
 
     if not updates:
         return
 
+    # ``frames`` were loaded in a different session and are now detached, so
+    # mutating their attributes would be a no-op. Issue explicit UPDATEs keyed
+    # by primary key instead.
     async with AsyncSessionLocal() as session:
-        for frame, caption in updates:
-            frame.caption = caption
-            frame.embedding = encode_text(caption)
+        for frame_id, caption in updates:
+            await session.execute(
+                update(VideoFrame)
+                .where(VideoFrame.id == frame_id)
+                .values(caption=caption, embedding=encode_text(caption))
+            )
         await session.commit()
 
 
@@ -489,7 +495,8 @@ async def extract_knowledge_graph(
 ) -> dict:
     """Extract a knowledge graph for a course video and store it in Postgres + Neo4j.
 
-    Falls back to a hardcoded skeleton graph if the VLM call fails.
+    Returns an empty graph (with ``_fallback=True``) if the VLM call fails, so
+    callers can surface the failure without fabricating fake knowledge points.
     """
     course, video, frames = await _load_video_and_frames(course_id, video_id)
     if not course:
@@ -531,6 +538,10 @@ async def extract_knowledge_graph(
     # Persist to Postgres
     node_id_map: dict[str, str] = {}
     async with AsyncSessionLocal() as session:
+        # Keep references to the pending objects so we can read their generated
+        # primary keys after flush. ``session.new`` is cleared by flush(), so
+        # iterating it post-flush would silently yield nothing.
+        db_nodes: list[KnowledgeNode] = []
         for node in nodes:
             node_id = node.get("id")
             name = node.get("name", "")
@@ -547,13 +558,14 @@ async def extract_knowledge_graph(
                 embedding=embedding,
             )
             session.add(db_node)
+            db_nodes.append(db_node)
 
         # Flush to populate generated primary keys before commit so we can
         # build the neo4j_id -> db_id mapping without a second query.
         await session.flush()
-        for obj in session.new:
-            if isinstance(obj, KnowledgeNode) and obj.neo4j_id:
-                node_id_map[obj.neo4j_id] = obj.id
+        for db_node in db_nodes:
+            if db_node.neo4j_id:
+                node_id_map[db_node.neo4j_id] = db_node.id
         await session.commit()
 
     # Persist edges to Postgres using the neo4j_id mapping.

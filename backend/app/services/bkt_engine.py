@@ -22,9 +22,16 @@ _db_retry = retry(
 )
 
 
-def _bkt_update(p_l: float, is_correct: bool, p_g: float, p_s: float) -> float:
-    """Apply BKT observation update and learning transition."""
-    if not (0.0 <= p_l <= 1.0 and 0.0 <= p_g <= 1.0 and 0.0 <= p_s <= 1.0):
+def _bkt_update(p_l: float, is_correct: bool, p_g: float, p_s: float, p_t: float | None = None) -> float:
+    """Apply BKT observation update and learning transition.
+
+    ``p_t`` is the per-node learning (transition) probability. When None it
+    falls back to the global ``settings.bkt_p_t`` so callers/tests that don't
+    care about per-node tuning keep working.
+    """
+    if p_t is None:
+        p_t = settings.bkt_p_t
+    if not (0.0 <= p_l <= 1.0 and 0.0 <= p_g <= 1.0 and 0.0 <= p_s <= 1.0 and 0.0 <= p_t <= 1.0):
         raise ValueError("BKT probabilities must be in [0, 1]")
 
     if is_correct:
@@ -37,7 +44,7 @@ def _bkt_update(p_l: float, is_correct: bool, p_g: float, p_s: float) -> float:
     denominator = denominator or 1e-9
     p_l_given_obs = numerator / denominator
     p_l_given_obs = max(0.0, min(1.0, p_l_given_obs))
-    p_l_next = p_l_given_obs + (1 - p_l_given_obs) * settings.bkt_p_t
+    p_l_next = p_l_given_obs + (1 - p_l_given_obs) * p_t
     return max(0.0, min(1.0, p_l_next))
 
 
@@ -85,14 +92,28 @@ async def initialize_mastery(user_id: str, course_id: str) -> None:
 
 @_db_retry
 async def update_mastery(user_id: str, node_id: str, is_correct: bool) -> dict:
-    """Update mastery for a user/node after one interaction."""
+    """Update mastery for a user/node after one interaction.
+
+    If no Mastery row exists yet (e.g. new nodes were added to the course after
+    the user's last ``initialize_mastery``), lazily initialize the course's
+    mastery records so the interaction is never left dangling with a 404.
+    """
     async with AsyncSessionLocal() as session:
         mastery = await session.get(Mastery, {"user_id": user_id, "node_id": node_id})
         if mastery is None:
-            raise HTTPException(status_code=404, detail="未找到掌握度记录")
+            # Resolve the course from the node and backfill missing records.
+            node = await session.get(KnowledgeNode, node_id)
+            if node is None:
+                raise HTTPException(status_code=404, detail="未找到知识点节点")
+            course_id = node.course_id
+            await session.rollback()
+            await initialize_mastery(user_id, course_id)
+            mastery = await session.get(Mastery, {"user_id": user_id, "node_id": node_id})
+            if mastery is None:
+                raise HTTPException(status_code=404, detail="未找到掌握度记录")
 
         mastery.p_known = _bkt_update(
-            mastery.p_known, is_correct, settings.bkt_p_g, settings.bkt_p_s
+            mastery.p_known, is_correct, settings.bkt_p_g, settings.bkt_p_s, p_t=mastery.p_t
         )
         mastery.interactions_count += 1
         mastery.updated_at = datetime.now(UTC)

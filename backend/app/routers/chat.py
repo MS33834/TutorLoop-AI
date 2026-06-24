@@ -117,7 +117,7 @@ def _save_screenshot_if_any(screenshot: str | None) -> str | None:
         else:
             logger.warning("Unsupported screenshot format: %s", mime)
             return None
-        fd, path = tempfile.mkstemp(suffix=suffix)
+        fd, path = tempfile.mkstemp(prefix="chat_screenshot_", suffix=suffix)
         with open(fd, "wb") as f:
             f.write(raw)
         return path
@@ -168,11 +168,20 @@ async def _record_mastery_after_chat(
     if not student_answer or not looks_like_answer(student_answer):
         return
 
+    # The question the student is answering is the previous assistant turn in
+    # the request history (the latest user message is the student's answer).
+    previous_question = None
+    for msg in reversed(request.messages[:-1] if request.messages else []):
+        if getattr(msg, "role", None) == "assistant" and getattr(msg, "content", ""):
+            previous_question = msg.content
+            break
+
     try:
         assessment = await assess_answer(
             question_context=context_text or node_name or "",
             student_answer=student_answer,
             node_name=node_name,
+            question=previous_question,
         )
     except Exception as exc:
         logger.warning("Answer assessment failed: %s", exc)
@@ -188,7 +197,7 @@ async def _record_mastery_after_chat(
             course_id=course_id,
             video_id=video_id,
             video_timestamp=request.timestamp,
-            question_text=request.messages[-1].content if request.messages else None,
+            question_text=previous_question,
             answer_text=student_answer,
             is_correct=is_correct,
             node_id=node_id,

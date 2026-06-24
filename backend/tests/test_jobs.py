@@ -34,44 +34,44 @@ def _make_old_file(tmp_path: Path, name: str, age_days: float) -> Path:
 @pytest.mark.asyncio
 async def test_cleanup_deletes_old_screenshots(tmp_path):
     """Files older than the retention window are deleted."""
-    _make_old_file(tmp_path, "screenshot_old.png", age_days=SCREENSHOT_RETENTION_DAYS + 1)
-    _make_old_file(tmp_path, "screenshot_old2.tmp_screenshot", age_days=SCREENSHOT_RETENTION_DAYS + 5)
+    _make_old_file(tmp_path, "chat_screenshot_old.png", age_days=SCREENSHOT_RETENTION_DAYS + 1)
+    _make_old_file(tmp_path, "chat_screenshot_old2.jpg", age_days=SCREENSHOT_RETENTION_DAYS + 5)
 
     with patch("tempfile.gettempdir", return_value=str(tmp_path)):
         result = await cleanup_screenshots_task({})
 
     assert result["deleted"] == 2
     assert result["errors"] == 0
-    assert not (tmp_path / "screenshot_old.png").exists()
-    assert not (tmp_path / "screenshot_old2.tmp_screenshot").exists()
+    assert not (tmp_path / "chat_screenshot_old.png").exists()
+    assert not (tmp_path / "chat_screenshot_old2.jpg").exists()
 
 
 @pytest.mark.asyncio
 async def test_cleanup_preserves_recent_screenshots(tmp_path):
     """Files within the retention window are NOT deleted."""
-    _make_old_file(tmp_path, "screenshot_recent.png", age_days=1)
-    _make_old_file(tmp_path, "screenshot_fresh.tmp_screenshot", age_days=0)
+    _make_old_file(tmp_path, "chat_screenshot_recent.png", age_days=1)
+    _make_old_file(tmp_path, "chat_screenshot_fresh.jpg", age_days=0)
 
     with patch("tempfile.gettempdir", return_value=str(tmp_path)):
         result = await cleanup_screenshots_task({})
 
     assert result["deleted"] == 0
-    assert (tmp_path / "screenshot_recent.png").exists()
-    assert (tmp_path / "screenshot_fresh.tmp_screenshot").exists()
+    assert (tmp_path / "chat_screenshot_recent.png").exists()
+    assert (tmp_path / "chat_screenshot_fresh.jpg").exists()
 
 
 @pytest.mark.asyncio
 async def test_cleanup_ignores_non_screenshot_files(tmp_path):
     """Files not matching the screenshot globs are left alone, even if old."""
     _make_old_file(tmp_path, "unrelated_old_file.txt", age_days=SCREENSHOT_RETENTION_DAYS + 10)
-    _make_old_file(tmp_path, "screenshot_old.png", age_days=SCREENSHOT_RETENTION_DAYS + 1)
+    _make_old_file(tmp_path, "chat_screenshot_old.png", age_days=SCREENSHOT_RETENTION_DAYS + 1)
 
     with patch("tempfile.gettempdir", return_value=str(tmp_path)):
         result = await cleanup_screenshots_task({})
 
     assert result["deleted"] == 1
     assert (tmp_path / "unrelated_old_file.txt").exists()
-    assert not (tmp_path / "screenshot_old.png").exists()
+    assert not (tmp_path / "chat_screenshot_old.png").exists()
 
 
 @pytest.mark.asyncio
@@ -88,7 +88,7 @@ async def test_cleanup_returns_zero_when_no_files(tmp_path):
 async def test_cleanup_skips_directories(tmp_path):
     """Directories matching the glob are skipped (only files are deleted)."""
     # Create a directory matching the screenshot glob pattern.
-    d = tmp_path / "screenshot_dir"
+    d = tmp_path / "chat_screenshot_dir"
     d.mkdir()
     old_mtime = time.time() - (SCREENSHOT_RETENTION_DAYS + 1) * 86400
     os.utime(d, (old_mtime, old_mtime))
@@ -130,7 +130,11 @@ async def test_probe_marks_healthy_key_as_healthy():
 
     assert result["probed"] == 1
     assert result["healthy"] == 1
-    mock_pool.mark_healthy.assert_called_once_with(k, rtt_ms=0.0)
+    # rtt_ms is now measured from the real probe call instead of hardcoded
+    # to 0.0, so just assert it was passed and is non-negative.
+    mock_pool.mark_healthy.assert_called_once()
+    _, kwargs = mock_pool.mark_healthy.call_args
+    assert kwargs.get("rtt_ms", -1) >= 0
 
 
 @pytest.mark.asyncio

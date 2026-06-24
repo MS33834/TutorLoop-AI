@@ -167,11 +167,11 @@ const masteryChartOptions = {
   }
 }
 
-const CACHE_KEY = (courseId) => `tutorloop-report-${courseId}`
+const CACHE_KEY = (courseId, userId) => `tutorloop-report-${userId || 'anon'}-${courseId}`
 
 function cacheReport(data) {
   try {
-    localStorage.setItem(CACHE_KEY(props.courseId), JSON.stringify({
+    localStorage.setItem(CACHE_KEY(props.courseId, user.userId), JSON.stringify({
       savedAt: new Date().toISOString(),
       data
     }))
@@ -182,7 +182,7 @@ function cacheReport(data) {
 
 function loadCachedReport() {
   try {
-    const raw = localStorage.getItem(CACHE_KEY(props.courseId))
+    const raw = localStorage.getItem(CACHE_KEY(props.courseId, user.userId))
     if (!raw) return null
     const parsed = JSON.parse(raw)
     return parsed.data || null
@@ -216,7 +216,7 @@ async function loadReport() {
     const cached = loadCachedReport()
     if (cached) {
       report.value = cached
-      error.value = '已显示本地缓存的报告显示，数据可能不是最新的。'
+      error.value = '已显示本地缓存的报告，数据可能不是最新的。'
     } else {
       report.value = null
     }
@@ -232,11 +232,17 @@ function exportReport() {
     return
   }
 
-  const title = report.value?.course_title || '学习报告'
+  // Escape dynamic text before injecting into HTML to prevent XSS via
+  // attacker-controlled node names / course titles.
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]))
+
+  const title = esc(report.value?.course_title || '学习报告')
   const items = (report.value?.mastery_items || [])
     .map((item) => `
       <tr>
-        <td>${item.name}</td>
+        <td>${esc(item.name)}</td>
         <td>${formatPercent(item.p_known)}</td>
         <td>${formatPercent(item.threshold)}</td>
       </tr>

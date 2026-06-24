@@ -29,7 +29,10 @@ onErrorCaptured((err) => {
   // eslint-disable-next-line no-console
   console.warn('雷达图渲染失败，切换到文本列表', err)
   chartError.value = true
-  return true
+  // Return false to stop the error from bubbling up to the ErrorBoundary,
+  // otherwise the whole page is replaced by the error screen and this
+  // component's own fallback list never becomes visible.
+  return false
 })
 
 function itemKey(item, index) {
@@ -163,7 +166,7 @@ const chartOptions = computed(() => ({
     </div>
 
     <div v-else class="chart-wrapper" role="img" aria-label="掌握度雷达图">
-      <Radar ref="chartRef" :data="chartData" :options="chartOptions" />
+      <Radar :data="chartData" :options="chartOptions" />
     </div>
   </div>
 </template>

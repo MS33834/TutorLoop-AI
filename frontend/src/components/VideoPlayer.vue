@@ -20,8 +20,15 @@ const playbackRate = ref(1)
 const showSubtitles = ref(true)
 const screenshotError = ref('')
 let controlsTimer = null
+let screenshotErrorTimer = null
 
 const PLAYBACK_RATES = [0.5, 1, 1.25, 1.5, 2]
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]))
+}
 
 const formattedCurrentTime = computed(() => formatTime(currentTime.value))
 const formattedDuration = computed(() => formatTime(duration.value))
@@ -47,11 +54,16 @@ const cleanedHighlightWords = computed(() => {
 })
 
 function highlightedSubtitle(text) {
-  if (!text || !cleanedHighlightWords.value.length) return text
-  let html = text
+  // Escape HTML first so subtitle text can never inject markup. Highlighting
+  // then operates on the escaped string; highlight words are escaped too so
+  // they still match entities like &amp; in the escaped text.
+  const safe = escapeHtml(text)
+  if (!safe || !cleanedHighlightWords.value.length) return safe
+  let html = safe
   for (const word of cleanedHighlightWords.value) {
-    const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const pattern = new RegExp(`(${escaped})`, 'gi')
+    const escapedWord = escapeHtml(word)
+    if (!escapedWord) continue
+    const pattern = new RegExp(`(${escapedWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
     html = html.replace(pattern, '<mark>$1</mark>')
   }
   return html
@@ -122,10 +134,21 @@ function seekTo(seconds) {
   video.value.currentTime = Math.max(0, seconds)
 }
 
+function showScreenshotError(msg) {
+  clearTimeout(screenshotErrorTimer)
+  screenshotError.value = msg
+  emit('screenshot-error', msg)
+  // Clear via JS timer so consecutive failures re-trigger the toast. Relying
+  // on a CSS animation alone would leave opacity:0 after the first error and
+  // never replay for subsequent ones.
+  screenshotErrorTimer = setTimeout(() => {
+    screenshotError.value = ''
+  }, 3000)
+}
+
 function takeScreenshot() {
   if (!video.value || !props.src) {
-    screenshotError.value = '视频尚未加载，无法截图'
-    emit('screenshot-error', screenshotError.value)
+    showScreenshotError('视频尚未加载，无法截图')
     return
   }
   screenshotError.value = ''
@@ -134,15 +157,13 @@ function takeScreenshot() {
   canvas.height = video.value.videoHeight || 360
   const ctx = canvas.getContext('2d')
   if (!ctx) {
-    screenshotError.value = '无法获取画布上下文，截图失败'
-    emit('screenshot-error', screenshotError.value)
+    showScreenshotError('无法获取画布上下文，截图失败')
     return
   }
   try {
     ctx.drawImage(video.value, 0, 0, canvas.width, canvas.height)
   } catch (err) {
-    screenshotError.value = '视频帧尚未就绪，请稍后重试'
-    emit('screenshot-error', screenshotError.value)
+    showScreenshotError('视频帧尚未就绪，请稍后重试')
     return
   }
   const dataURL = canvas.toDataURL('image/jpeg', 0.9)
@@ -175,6 +196,7 @@ watch(() => props.src, () => {
 
 onBeforeUnmount(() => {
   clearTimeout(controlsTimer)
+  clearTimeout(screenshotErrorTimer)
 })
 
 defineExpose({
@@ -418,11 +440,5 @@ defineExpose({
   font-size: 0.8125rem;
   border-radius: 0.375rem;
   pointer-events: none;
-  animation: fadeOut 3s forwards;
-}
-
-@keyframes fadeOut {
-  0%, 70% { opacity: 1; }
-  100% { opacity: 0; }
 }
 </style>

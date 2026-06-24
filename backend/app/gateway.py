@@ -230,19 +230,25 @@ async def _stream_with_first_token_timeout(
 ) -> AsyncIterator[dict[str, Any]]:
     gen = provider.stream_chat(messages=messages, model=model)
     try:
-        first = await asyncio.wait_for(gen.__anext__(), timeout=first_token_timeout)
-    except StopAsyncIteration:
-        return
-    except TimeoutError as exc:
-        raise GatewayError("first token timeout") from exc
-    except ProviderError as exc:
-        raise GatewayError(str(exc)) from exc
-    except Exception as exc:
-        raise GatewayError(str(exc)) from exc
+        try:
+            first = await asyncio.wait_for(gen.__anext__(), timeout=first_token_timeout)
+        except StopAsyncIteration:
+            return
+        except TimeoutError as exc:
+            raise GatewayError("first token timeout") from exc
+        except ProviderError as exc:
+            raise GatewayError(str(exc)) from exc
+        except Exception as exc:
+            raise GatewayError(str(exc)) from exc
 
-    yield {"type": "token", "content": first}
-    async for chunk in gen:
-        yield {"type": "token", "content": chunk}
+        yield {"type": "token", "content": first}
+        async for chunk in gen:
+            yield {"type": "token", "content": chunk}
+    finally:
+        # Ensure the underlying generator (and its HTTP connection) is always
+        # released, even when the first-token wait times out or a later chunk
+        # raises. Without this the connection leaks until GC.
+        await gen.aclose()
 
 
 async def _try_cloud(

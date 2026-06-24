@@ -1,6 +1,5 @@
 <script setup>
 import { ref, onErrorCaptured } from 'vue'
-import * as Sentry from '@sentry/vue'
 
 const hasError = ref(false)
 const errorMessage = ref('')
@@ -12,13 +11,24 @@ onErrorCaptured((err, instance, info) => {
   errorInfo.value = info
   console.error('ErrorBoundary caught:', err, info)
   if (import.meta.env.VITE_SENTRY_DSN) {
-    Sentry.captureException(err, { extra: { vueErrorInfo: info } })
+    // Dynamic import keeps Sentry out of the main bundle when no DSN is set.
+    // Use .then() (not async/await) so the handler still returns false
+    // synchronously to stop error propagation.
+    import('@sentry/vue')
+      .then((Sentry) => Sentry.captureException(err, { extra: { vueErrorInfo: info } }))
+      .catch(() => {})
   }
   return false
 })
 
 function reload() {
   window.location.reload()
+}
+
+function retry() {
+  hasError.value = false
+  errorMessage.value = ''
+  errorInfo.value = ''
 }
 
 async function copyError() {
@@ -42,7 +52,10 @@ async function copyError() {
 {{ errorInfo }}</pre>
         <button class="copy-btn" type="button" @click="copyError">复制错误信息</button>
       </details>
-      <button class="error-btn" type="button" @click="reload">刷新页面</button>
+      <div class="error-actions">
+        <button class="error-btn secondary" type="button" @click="retry">重试</button>
+        <button class="error-btn" type="button" @click="reload">刷新页面</button>
+      </div>
     </div>
   </div>
   <slot v-else />
@@ -106,6 +119,12 @@ async function copyError() {
   cursor: pointer;
 }
 
+.error-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+}
+
 .error-btn {
   padding: 0.5rem 1.25rem;
   background: #2563eb;
@@ -114,5 +133,11 @@ async function copyError() {
   border-radius: 0.5rem;
   cursor: pointer;
   font-size: 0.9375rem;
+}
+
+.error-btn.secondary {
+  background: #ffffff;
+  color: #374151;
+  border: 1px solid #e5e7eb;
 }
 </style>

@@ -46,6 +46,10 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  if (saveLayoutTimeout) {
+    clearTimeout(saveLayoutTimeout)
+    saveLayoutTimeout = null
+  }
   if (cy) {
     cy.destroy()
     cy = null
@@ -220,7 +224,14 @@ function autoLayout() {
     animate: true,
     componentSpacing: 60,
     nodeRepulsion: 400000,
-    idealEdgeLength: 80
+    idealEdgeLength: 80,
+    // cose layout does not emit 'dragfree', so persist positions explicitly
+    // when the layout animation finishes, otherwise the new layout is lost
+    // on navigation unless the user manually saves.
+    stop: () => {
+      if (saveLayoutTimeout) clearTimeout(saveLayoutTimeout)
+      saveLayoutTimeout = setTimeout(saveLayout, 800)
+    }
   }).run()
 }
 
@@ -297,6 +308,14 @@ async function removeNode() {
 }
 
 async function saveEdge() {
+  if (!edgeForm.value.source_id || !edgeForm.value.target_id) {
+    error.value = '请选择起点和终点知识点'
+    return
+  }
+  if (edgeForm.value.source_id === edgeForm.value.target_id) {
+    error.value = '起点和终点不能是同一个知识点'
+    return
+  }
   saving.value = true
   error.value = ''
   successMsg.value = ''
@@ -400,7 +419,12 @@ async function removeEdge() {
         <input v-model="edgeForm.relation" class="field-input" type="text" />
       </label>
       <div class="panel-actions">
-        <button class="submit-btn" type="button" :disabled="saving" @click="saveEdge">
+        <button
+          class="submit-btn"
+          type="button"
+          :disabled="saving || !edgeForm.source_id || !edgeForm.target_id || edgeForm.source_id === edgeForm.target_id"
+          @click="saveEdge"
+        >
           {{ saving ? '保存中…' : '保存' }}
         </button>
         <button class="cancel-btn" type="button" @click="cancelPanel">取消</button>

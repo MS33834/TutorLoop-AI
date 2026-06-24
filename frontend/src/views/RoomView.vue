@@ -10,11 +10,12 @@ import {
 import { useChatStore } from '../stores/chat.js'
 import { useUserStore } from '../stores/user.js'
 import { apiFetch, API_BASE } from '../api/client.js'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { getRoomBySlug, joinRoom } from '../api/rooms.js'
 import VideoPlayer from '../components/VideoPlayer.vue'
 import MasteryRadar from '../components/MasteryRadar.vue'
 import RecommendCard from '../components/RecommendCard.vue'
+import { formatDate } from '../utils/format.js'
 
 const props = defineProps({
   slug: { type: String, required: true }
@@ -23,6 +24,7 @@ const props = defineProps({
 const chat = useChatStore()
 const user = useUserStore()
 const router = useRouter()
+const route = useRoute()
 
 const room = ref(null)
 const course = ref(null)
@@ -269,11 +271,20 @@ async function sendWatchRecord(useBeacon = false) {
     watch_seconds: Math.round(watchSeconds.value)
   }
 
-  // When unloading the page, use sendBeacon so the request survives navigation.
-  if (useBeacon && navigator.sendBeacon) {
+  // When unloading the page, use fetch with keepalive so the request survives
+  // navigation AND can still carry the Authorization header. sendBeacon cannot
+  // set custom headers, so authenticated watch records would be 401'd.
+  if (useBeacon) {
     try {
-      const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' })
-      navigator.sendBeacon(`${API_BASE}/api/interactions`, blob)
+      await fetch(`${API_BASE}/api/interactions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(user.token ? { Authorization: `Bearer ${user.token}` } : {})
+        },
+        body: JSON.stringify(payload),
+        keepalive: true
+      })
       watchSeconds.value = 0
       lastTickAt.value = null
     } catch {
@@ -453,8 +464,8 @@ async function send(needAnswer = false) {
 
   loading.value = true
 
-  // 每次提问前 flush 已累积的观看时长
-  await sendWatchRecord()
+  // 每次提问前 flush 已累积的观看时长（fire-and-forget，不阻塞提问）
+  sendWatchRecord()
 
   error.value = ''
   chat.addMessage('user', text || '[截图提问]')
@@ -515,7 +526,7 @@ async function send(needAnswer = false) {
         }
         // 刷新失败或已刷新过 —— 清除登录态并跳转。
         user.clearAuth()
-        router.push('/login')
+        router.push({ path: '/login', query: { redirect: route.fullPath } })
         throw new Error('登录已过期，请重新登录')
       }
       break
@@ -568,6 +579,8 @@ async function send(needAnswer = false) {
       // 用户主动取消或组件卸载，静默处理
       chat.updateLastAssistantContent('（已停止生成）')
     } else {
+      // 更新占位气泡，避免 UI 卡在"正在为你梳理思路…"
+      chat.updateLastAssistantContent('（生成失败，请重试）')
       handleError(err.message || '网络错误，请稍后重试')
     }
   } finally {
@@ -577,12 +590,6 @@ async function send(needAnswer = false) {
     screenshot.value = ''
     await scrollToBottom()
   }
-}
-
-function formatDate(value) {
-  if (!value) return '未知'
-  const d = new Date(value)
-  return Number.isNaN(d.getTime()) ? '未知' : d.toLocaleString('zh-CN')
 }
 
 function onKeydown(e) {
@@ -615,7 +622,7 @@ function onKeydown(e) {
     <div v-else-if="requiresLogin" class="password-gate">
       <h2 class="password-title">该房间需要登录</h2>
       <p class="password-hint">老师设置了仅登录学生可进入，请先登录账号。</p>
-      <button class="password-btn" type="button" @click="$router.push('/login')">去登录</button>
+      <button class="password-btn" type="button" @click="router.push({ path: '/login', query: { redirect: route.fullPath } })">去登录</button>
     </div>
 
     <template v-else>

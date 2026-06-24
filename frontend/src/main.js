@@ -1,6 +1,5 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
-import * as Sentry from '@sentry/vue'
 import App from './App.vue'
 import ErrorBoundary from './components/ErrorBoundary.vue'
 import router from './router'
@@ -8,7 +7,11 @@ import router from './router'
 const app = createApp(App)
 app.component('ErrorBoundary', ErrorBoundary)
 
+// Lazy-load Sentry only when a DSN is configured so builds without Sentry
+// don't ship the (~80KB) SDK as dead code.
+let Sentry = null
 if (import.meta.env.VITE_SENTRY_DSN) {
+  Sentry = await import('@sentry/vue')
   Sentry.init({
     app,
     dsn: import.meta.env.VITE_SENTRY_DSN,
@@ -32,7 +35,7 @@ window.addEventListener('unhandledrejection', (event) => {
     return
   }
   console.error('Unhandled promise rejection:', event.reason)
-  if (import.meta.env.VITE_SENTRY_DSN) {
+  if (Sentry) {
     Sentry.captureException(event.reason)
   }
 })

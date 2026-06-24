@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 # Screenshots older than this are deleted by the cleanup job.
 SCREENSHOT_RETENTION_DAYS = 7
 # Screenshots are written to the system temp dir with a known prefix.
-SCREENSHOT_GLOBS = ("screenshot_*", "*.tmp_screenshot*")
+# chat.py uses tempfile.mkstemp(prefix="chat_screenshot_", suffix=...).
+SCREENSHOT_GLOBS = ("chat_screenshot_*",)
 
 
 async def process_video_task(
@@ -131,10 +132,14 @@ async def probe_keys_health_task(ctx: dict) -> dict:
     for key_info in pool.keys:
         results["probed"] += 1
         try:
+            start = time.perf_counter()
             health = await key_info.provider.health_check()
+            rtt_ms = (time.perf_counter() - start) * 1000.0
             status = health.get("status")
             if status == "healthy":
-                pool.mark_healthy(key_info, rtt_ms=0.0)
+                # Pass the measured RTT so the weighted selector keeps accurate
+                # latency data; passing 0.0 would skew avg_rtt_ms toward zero.
+                pool.mark_healthy(key_info, rtt_ms=rtt_ms)
                 results["healthy"] += 1
             elif status == "degraded":
                 pool.mark_degraded(key_info, reason=health.get("reason", "probe degraded"))

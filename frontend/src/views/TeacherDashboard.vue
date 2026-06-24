@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import Qrcode from 'qrcode.vue'
 import { apiFetch } from '../api/client.js'
 import { listCourseRooms, createRoom, deleteRoom, updateRoom } from '../api/rooms.js'
+import { formatDate as formatDateTime } from '../utils/format.js'
 
 const router = useRouter()
 const courses = ref([])
@@ -216,16 +217,12 @@ function toDatetimeLocal(iso) {
 }
 
 function formatDate(iso) {
-  if (!iso) return '永不过期'
-  const d = new Date(iso)
-  return isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN')
+  // Room expiry uses a distinct empty-state label ("永不过期").
+  return iso ? formatDateTime(iso) : '永不过期'
 }
 
 function formatActivity(iso) {
-  if (!iso) return '还未开始活动'
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return iso
-  return d.toLocaleString('zh-CN')
+  return iso ? formatDateTime(iso) : '还未开始活动'
 }
 </script>
 
