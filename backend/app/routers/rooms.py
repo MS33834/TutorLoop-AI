@@ -5,11 +5,12 @@ import secrets
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.db.postgres import AsyncSessionLocal
+from app.limiter import limiter
 from app.models.db import Course, Room, RoomEntrySession, User
 from app.schemas import (
     RoomCreate,
@@ -173,7 +174,8 @@ async def list_course_rooms(
 
 
 @router.get("/api/rooms/{slug}", response_model=RoomPublicResponse)
-async def get_room(slug: str):
+@limiter.limit("30/minute")
+async def get_room(slug: str, request: Request):
     async with AsyncSessionLocal() as session:
         room = await _get_room_by_slug(session, slug)
         if room is None:
@@ -184,7 +186,8 @@ async def get_room(slug: str):
 
 
 @router.post("/api/rooms/{slug}/join")
-async def join_room(slug: str, body: RoomJoinRequest):
+@limiter.limit("10/minute")
+async def join_room(slug: str, body: RoomJoinRequest, request: Request):
     async with AsyncSessionLocal() as session:
         room = await _get_room_by_slug(session, slug)
         if room is None:

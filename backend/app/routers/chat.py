@@ -341,15 +341,17 @@ async def chat(
             course_id = room.course_id
     else:
         # Resolve course_id from the room slug for authenticated users too,
-        # so the Socratic agent can look up mastery.
-        if body.room_slug:
-            async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(Room).where(Room.slug == body.room_slug, Room.is_active == True)  # noqa: E712
-                )
-                room = result.scalar_one_or_none()
-                if room is not None:
-                    course_id = room.course_id
+        # so the Socratic agent can look up mastery. This enforces the same
+        # password / expiry / ownership checks as join_room, preventing an
+        # authenticated user from bypassing room password protection.
+        room = await _resolve_room_for_authenticated(
+            body.room_slug,
+            current_user,
+            body.room_password,
+            body.session_id,
+        )
+        if room is not None:
+            course_id = room.course_id
 
     return StreamingResponse(
         _sse_event_stream(body, user_id, course_id),

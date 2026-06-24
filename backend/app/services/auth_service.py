@@ -157,4 +157,10 @@ async def get_optional_current_user(
         return None
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(User).where(User.id == user_id))
-        return result.scalar_one_or_none()
+        user = result.scalar_one_or_none()
+    # Treat disabled users as anonymous so they cannot use endpoints that
+    # accept optional auth (e.g. /api/chat, POST /api/interactions) with a
+    # still-valid access token. Mirrors get_current_active_user's check.
+    if user is not None and not user.is_active:
+        return None
+    return user

@@ -4,10 +4,20 @@ __pycache__
 *.pyd
 .Python
 .env
+.env.*
 .venv
 venv/
 ENV/
 uploads/
 .pytest_cache
 .mypy_cache
+.ruff_cache
 .DS_Store
+# Keep these out of the production image to reduce size and attack surface.
+tests/
+docs/
+.git/
+.gitignore
+*.md
+requirements-dev.txt
+pyproject.toml

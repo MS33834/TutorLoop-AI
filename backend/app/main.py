@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
+from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
 
 from app.config import settings
@@ -65,9 +66,11 @@ async def lifespan(app: FastAPI):
     try:
         from app.gateway import close_local_provider
         from app.gateway import pool as _gateway_pool
+        from app.services.kg_extractor import close_vlm_provider
 
         await _gateway_pool.close_all()
         await close_local_provider()
+        await close_vlm_provider()
     except Exception as exc:
         logger.warning("Could not close gateway HTTP clients: %s", exc)
     await close_db()
@@ -81,6 +84,9 @@ app = FastAPI(
 )
 app.state.limiter = limiter
 app.add_exception_handler(429, _rate_limit_exceeded_handler)
+# SlowAPIMiddleware must be added so default_limits and @limiter.limit
+# decorators are actually enforced on every request.
+app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

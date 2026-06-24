@@ -29,6 +29,35 @@ SAMPLE_FRAME_COUNT = 8
 MAX_CAPTION_TOKENS = 256
 MAX_KG_TOKENS = 4096
 
+# Shared VLM provider singleton. Previously _caption_frame and _call_vlm each
+# constructed a fresh OpenAICompatibleProvider (and thus a fresh httpx client
+# pool) on every call, leaking connections for the lifetime of the process.
+# Lazily initialised on first use so tests without a VLM config don't pay the
+# cost. Closed via close_vlm_provider() on application shutdown.
+_vlm_provider: OpenAICompatibleProvider | None = None
+
+
+def _get_vlm_provider() -> OpenAICompatibleProvider:
+    """Return a shared VLM provider, creating it on first use."""
+    global _vlm_provider
+    if _vlm_provider is None:
+        _vlm_provider = OpenAICompatibleProvider(
+            base_url=settings.vlm_base_url,
+            api_key=settings.vlm_api_key,
+        )
+    return _vlm_provider
+
+
+async def close_vlm_provider() -> None:
+    """Close the shared VLM provider's HTTP client (call on shutdown)."""
+    global _vlm_provider
+    if _vlm_provider is not None:
+        try:
+            await _vlm_provider.aclose()
+        except Exception as exc:
+            logger.warning("Error closing VLM provider client: %s", exc)
+        _vlm_provider = None
+
 
 async def _load_video_and_frames(
     course_id: str, video_id: str
@@ -126,10 +155,7 @@ async def _caption_frame(
 
     # Prefer dedicated VLM endpoint if configured.
     if settings.vlm_base_url and settings.vlm_api_key:
-        provider = OpenAICompatibleProvider(
-            base_url=settings.vlm_base_url,
-            api_key=settings.vlm_api_key,
-        )
+        provider = _get_vlm_provider()
         response = await provider.chat_completion(
             messages=messages,
             model=settings.vlm_model,
@@ -473,10 +499,7 @@ async def _call_vlm(messages: list[dict]) -> dict:
     configured in the gateway pool.
     """
     if settings.vlm_base_url and settings.vlm_api_key:
-        provider = OpenAICompatibleProvider(
-            base_url=settings.vlm_base_url,
-            api_key=settings.vlm_api_key,
-        )
+        provider = _get_vlm_provider()
         response = await provider.chat_completion(
             messages=messages,
             model=settings.vlm_model,

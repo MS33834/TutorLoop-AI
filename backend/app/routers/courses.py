@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -395,7 +396,10 @@ def _persist_uploaded_file(temp_path: str, course_id: str, ext: str) -> str:
     upload_dir = os.path.join(settings.upload_dir.rstrip("/"), "materials", course_id)
     os.makedirs(upload_dir, exist_ok=True)
     dest = os.path.join(upload_dir, f"{uuid4()}{ext}")
-    os.rename(temp_path, dest)
+    # shutil.move handles cross-device moves (temp dir and upload dir may live
+    # on different filesystems inside a container), where os.rename would
+    # raise OSError: Invalid cross-device link.
+    shutil.move(temp_path, dest)
     return dest
 
 
@@ -701,9 +705,11 @@ async def get_video_subtitles(video_id: str):
 
 
 @router.post("/api/courses/{course_id}/build-graph")
+@limiter.limit("3/minute")
 async def build_graph(
     course_id: str,
     body: BuildGraphRequest,
+    request: Request,
     current_user: User = Depends(get_current_active_user),  # noqa: B008
 ):
     await _require_course_owner(course_id, current_user)

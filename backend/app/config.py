@@ -31,6 +31,19 @@ class Settings(BaseSettings):
             raise ValueError("SECRET_KEY must be at least 32 characters long")
         if value == "change-me-in-production":
             raise ValueError("SECRET_KEY is using the default insecure value; set a strong random key")
+        # Reject well-known placeholder values shipped in env.example so a
+        # forgotten edit does not silently expose the JWT signing key.
+        insecure_placeholders = {
+            "please_change_this_secret_key_before_deployment",
+            "replace-with-a-strong-random-key-of-at-least-32-chars",
+            "change-me",
+            "changeme",
+            "secret",
+        }
+        if value.lower() in insecure_placeholders:
+            raise ValueError(
+                "SECRET_KEY is using a known placeholder value; set a strong random key"
+            )
         return value
 
     database_url: str = Field(
@@ -87,6 +100,15 @@ class Settings(BaseSettings):
     def _validate_token_expiry(cls, value: int) -> int:
         if value < 1:
             raise ValueError("ACCESS_TOKEN_EXPIRE_MINUTES must be at least 1")
+        # Access tokens should be short-lived; a leaked long-lived access token
+        # cannot be revoked. Cap at 24h to prevent misconfiguration (e.g. the
+        # 7-day value previously shipped in env.example). Use refresh tokens
+        # for long sessions instead.
+        if value > 1440:
+            raise ValueError(
+                "ACCESS_TOKEN_EXPIRE_MINUTES must not exceed 1440 (24h); "
+                "use refresh tokens for longer sessions"
+            )
         return value
 
     @field_validator("bkt_p_l0", "bkt_p_t", "bkt_p_g", "bkt_p_s")

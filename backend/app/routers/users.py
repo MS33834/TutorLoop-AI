@@ -3,10 +3,11 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 
 from app.db.postgres import AsyncSessionLocal
+from app.limiter import limiter
 from app.models.db import Interaction, Room, User
 from app.schemas import (
     InteractionCreate,
@@ -47,8 +48,10 @@ async def _require_room_for_anonymous(room_id: str | None) -> Room | None:
 
 
 @router.post("/api/interactions", response_model=InteractionResponse)
+@limiter.limit("30/minute")
 async def create_interaction(
     body: InteractionCreate,
+    request: Request,
     current_user: User | None = Depends(get_optional_current_user),
 ):
     if not body.course_id:

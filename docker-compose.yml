@@ -66,6 +66,10 @@ services:
       REDIS_URL: redis://redis:6379
       UPLOAD_DIR: /app/uploads
       RUN_ALEMBIC_MIGRATIONS: "true"
+      # Allow the frontend (served by the frontend container on :80) and the
+      # Vite dev server origins to call the API. Without this the default
+      # (localhost:5173 only) blocks all browser requests from the compose stack.
+      CORS_ORIGINS: http://localhost,http://localhost:5173,http://localhost:4173,http://127.0.0.1
     volumes:
       - uploads_data:/app/uploads
     ports:
@@ -113,10 +117,13 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        # Vite inlines VITE_* at build time; pass it as a build arg so the
+        # produced bundle points at the backend service. Defaults to the
+        # backend container's address when accessed from the host.
+        VITE_API_BASE_URL: http://localhost:8000
     container_name: tutorloop-frontend
     restart: unless-stopped
-    environment:
-      VITE_API_BASE_URL: http://localhost:8000
     ports:
       - "80:80"
     depends_on:

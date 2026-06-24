@@ -56,8 +56,12 @@ async def init_db() -> None:
         async with engine.begin() as conn:
             await conn.run_sync(AppBase.metadata.create_all)
         logger.info("PostgreSQL tables created/verified")
-    except Exception as exc:  # pragma: no cover
-        logger.warning("Could not create tables automatically: %s", exc)
+    except Exception:
+        # Propagate so the container crashes rather than running with a
+        # partial schema and surfacing opaque errors at request time. This
+        # mirrors the Alembic path above.
+        logger.exception("Could not create tables automatically")
+        raise
 
 
 async def close_db() -> None:

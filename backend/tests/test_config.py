@@ -39,6 +39,39 @@ def test_config_secret_key_default_value_raises(clean_env):
         Settings(_env_file=None, SECRET_KEY="change-me-in-production")
 
 
+def test_config_secret_key_known_placeholder_raises(clean_env):
+    """Known placeholder values shipped in env.example must be rejected.
+
+    These are long enough to pass the length check but are publicly known, so
+    using them would expose the JWT signing key. The check is case-insensitive.
+    """
+    for placeholder in (
+        "PLEASE_CHANGE_THIS_SECRET_KEY_BEFORE_DEPLOYMENT",
+        "please_change_this_secret_key_before_deployment",
+        "replace-with-a-strong-random-key-of-at-least-32-chars",
+    ):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, SECRET_KEY=placeholder)
+
+
+def test_config_token_expiry_upper_bound_raises(clean_env):
+    """ACCESS_TOKEN_EXPIRE_MINUTES above 24h (1440) must be rejected.
+
+    Access tokens should be short-lived; the previous env.example value of
+    10080 (7 days) is insecure and must now fail validation.
+    """
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, SECRET_KEY="x" * 32, ACCESS_TOKEN_EXPIRE_MINUTES=10080)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, SECRET_KEY="x" * 32, ACCESS_TOKEN_EXPIRE_MINUTES=1441)
+
+
+def test_config_token_expiry_at_upper_bound_ok(clean_env):
+    """ACCESS_TOKEN_EXPIRE_MINUTES == 1440 (exactly 24h) is accepted."""
+    s = Settings(_env_file=None, SECRET_KEY="x" * 32, ACCESS_TOKEN_EXPIRE_MINUTES=1440)
+    assert s.access_token_expire_minutes == 1440
+
+
 def test_config_app_port_out_of_range_raises(clean_env):
     """APP_PORT outside 1-65535 must be rejected."""
     with pytest.raises(ValidationError):

@@ -6,3 +6,7 @@ dist
 *.log
 .vscode
 .idea
+# Keep git history and docs out of the build context.
+.git/
+.gitignore
+*.md
