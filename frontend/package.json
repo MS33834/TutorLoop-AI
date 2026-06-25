@@ -19,8 +19,8 @@
     "vue-router": "^4.3.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.0.4",
-    "vite": "^5.2.0",
-    "vite-plugin-pwa": "^0.19.7"
+    "@vitejs/plugin-vue": "^5.2.4",
+    "vite": "^6.2.6",
+    "vite-plugin-pwa": "^0.21.2"
   }
 }
