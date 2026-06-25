@@ -75,7 +75,13 @@ docker run -p 80:80 -e VITE_API_BASE_URL=https://api.tutorloop.example.com tutor
 ### Render
 
 1. 创建 Blueprint，选择 `backend/render.yaml`。
-2. 在环境变量中填写 `LLM_API_KEYS`、`NEO4J_URI`、`SENTRY_DSN` 等。
+2. 在环境变量中填写必填项：
+   - `SECRET_KEY`（web 与 worker 必须相同）
+   - `LLM_API_KEYS` / `LLM_BASE_URLS` / `LLM_MODELS`
+   - `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD`
+   - `REDIS_URL`
+   - `CORS_ORIGINS`（生产前端域名，如 `https://app.tutorloop.example.com`）
+   - 可选：`VLM_BASE_URL` / `VLM_API_KEY`、`SENTRY_DSN`
 3. Render 会自动创建 PostgreSQL 并绑定 `DATABASE_URL`。
 
 ### Fly.io
@@ -83,7 +89,9 @@ docker run -p 80:80 -e VITE_API_BASE_URL=https://api.tutorloop.example.com tutor
 ```bash
 cd backend
 fly launch --dockerfile Dockerfile --name tutorloop-backend --region hkg
-fly secrets set DATABASE_URL=... NEO4J_URI=... SENTRY_DSN=...
+fly secrets set DATABASE_URL=... NEO4J_URI=... NEO4J_USER=... NEO4J_PASSWORD=... \
+  REDIS_URL=... SECRET_KEY=... LLM_API_KEYS=... LLM_BASE_URLS=... LLM_MODELS=... \
+  CORS_ORIGINS=... SENTRY_DSN=...
 fly deploy
 ```
 
@@ -95,8 +103,20 @@ kubectl apply -f sealos-deployment.yaml
 kubectl create secret generic tutorloop-secrets \
   --from-literal=DATABASE_URL=... \
   --from-literal=NEO4J_URI=... \
+  --from-literal=NEO4J_USER=... \
+  --from-literal=NEO4J_PASSWORD=... \
+  --from-literal=REDIS_URL=... \
+  --from-literal=SECRET_KEY=... \
+  --from-literal=LLM_API_KEYS=... \
+  --from-literal=LLM_BASE_URLS=... \
+  --from-literal=LLM_MODELS=... \
+  --from-literal=CORS_ORIGINS=... \
+  --from-literal=VLM_BASE_URL=... \
+  --from-literal=VLM_API_KEY=... \
   --from-literal=SENTRY_DSN=...
 ```
+
+注意：当前 `PersistentVolumeClaim` 使用 `ReadWriteOnce`。如果 `backend` 与 `worker` 被调度到不同节点，`worker` 可能无法挂载 uploads 卷。生产环境建议使用支持 `ReadWriteMany` 的存储类，或将上传文件迁移到对象存储（S3/R2）。
 
 ---
 

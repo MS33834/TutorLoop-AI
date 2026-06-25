@@ -48,6 +48,14 @@ services:
         value: mastery_gap
       - key: EMBEDDING_MODEL
         value: sentence-transformers/all-MiniLM-L6-v2
+      - key: CORS_ORIGINS
+        sync: false
+      - key: VLM_BASE_URL
+        sync: false
+      - key: VLM_API_KEY
+        sync: false
+      - key: VLM_MODEL
+        value: qwen2.5-vl
 
   - type: worker
     name: tutorloop-worker
@@ -98,6 +106,12 @@ services:
         value: "600"
       - key: ARQ_KEEP_RESULT
         value: "3600"
+      - key: VLM_BASE_URL
+        sync: false
+      - key: VLM_API_KEY
+        sync: false
+      - key: VLM_MODEL
+        value: qwen2.5-vl
 
 databases:
   - name: tutorloop-postgres

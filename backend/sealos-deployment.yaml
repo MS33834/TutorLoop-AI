@@ -77,6 +77,22 @@ spec:
                 secretKeyRef:
                   name: tutorloop-secrets
                   key: SENTRY_DSN
+            - name: LOCAL_BASE_URL
+              value: http://localhost:8001/v1
+            - name: LOCAL_MODEL
+              value: qwen3.5-4b
+            - name: VLM_MODEL
+              value: qwen2.5-vl
+            - name: VLM_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: VLM_BASE_URL
+            - name: VLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: VLM_API_KEY
             - name: UPLOAD_DIR
               value: /app/uploads
             - name: RUN_ALEMBIC_MIGRATIONS
@@ -179,8 +195,33 @@ spec:
                 secretKeyRef:
                   name: tutorloop-secrets
                   key: SENTRY_DSN
+            - name: LOCAL_BASE_URL
+              value: http://localhost:8001/v1
+            - name: LOCAL_MODEL
+              value: qwen3.5-4b
+            - name: VLM_MODEL
+              value: qwen2.5-vl
+            - name: VLM_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: VLM_BASE_URL
+            - name: VLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tutorloop-secrets
+                  key: VLM_API_KEY
             - name: UPLOAD_DIR
               value: /app/uploads
+            - name: ARQ_MAX_JOBS
+              value: "10"
+            - name: ARQ_JOB_TIMEOUT
+              value: "600"
+            - name: ARQ_KEEP_RESULT
+              value: "3600"
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
           resources:
             requests:
               cpu: 100m
@@ -188,6 +229,10 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: tutorloop-uploads
 ---
 apiVersion: v1
 kind: Service
@@ -205,6 +250,10 @@ kind: PersistentVolumeClaim
 metadata:
   name: tutorloop-uploads
 spec:
+  # ReadWriteOnce allows only one node to mount at a time. If your cluster
+  # storage class supports ReadWriteMany, switch to it so backend and worker
+  # pods can be scheduled on different nodes. Alternatively, use object storage
+  # (S3/R2) for uploads in production.
   accessModes:
     - ReadWriteOnce
   resources:
