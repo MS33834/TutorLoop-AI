@@ -3,10 +3,13 @@
 import logging
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from sqlalchemy import delete
+
 from app.db.postgres import AsyncSessionLocal
-from app.models.db import Video
+from app.models.db import Interaction, Room, RoomEntrySession, Video
 from app.services.kg_extractor import extract_knowledge_graph
 from app.services.video_service import process_video
 
@@ -14,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 # Screenshots older than this are deleted by the cleanup job.
 SCREENSHOT_RETENTION_DAYS = 7
+# Anonymous interactions and ephemeral sessions older than this are purged.
+ANONYMOUS_DATA_RETENTION_DAYS = int(os.environ.get("ANONYMOUS_DATA_RETENTION_DAYS", "30"))
 # Screenshots are written to the system temp dir with a known prefix.
 # chat.py uses tempfile.mkstemp(prefix="chat_screenshot_", suffix=...).
 SCREENSHOT_GLOBS = ("chat_screenshot_*",)
@@ -168,4 +173,53 @@ async def probe_keys_health_task(ctx: dict) -> dict:
             logger.warning("Key probe failed for %s: %s", key_info.masked_key(), exc)
 
     logger.info("Key health probe: %s", results)
+    return results
+
+
+async def cleanup_expired_anonymous_data_task(ctx: dict) -> dict:
+    """Purge stale anonymous interactions, expired rooms and entry sessions.
+
+    Anonymous learning data has a short retention window to respect privacy
+    and keep the interactions table from growing unbounded. Rooms that have
+    expired and been inactive for the same window are also removed, along
+    with their associated RoomEntrySession rows (which are only useful while
+    a room is active).
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=ANONYMOUS_DATA_RETENTION_DAYS)
+    results = {
+        "anonymous_interactions_deleted": 0,
+        "expired_rooms_deleted": 0,
+        "stale_sessions_deleted": 0,
+    }
+
+    async with AsyncSessionLocal() as session:
+        # Delete anonymous interactions older than the retention window.
+        interaction_result = await session.execute(
+            delete(Interaction).where(
+                Interaction.user_id.is_(None),
+                Interaction.created_at < cutoff,
+            )
+        )
+        results["anonymous_interactions_deleted"] = interaction_result.rowcount
+
+        # Delete room entry sessions older than the retention window.
+        session_result = await session.execute(
+            delete(RoomEntrySession).where(RoomEntrySession.created_at < cutoff)
+        )
+        results["stale_sessions_deleted"] = session_result.rowcount
+
+        # Delete rooms that have expired and been inactive for the retention window.
+        # Use last_activity_at when available; fall back to expires_at/created_at.
+        room_result = await session.execute(
+            delete(Room).where(
+                Room.is_active.is_(False),
+                Room.expires_at.isnot(None),
+                Room.expires_at < cutoff,
+            )
+        )
+        results["expired_rooms_deleted"] = room_result.rowcount
+
+        await session.commit()
+
+    logger.info("Anonymous data cleanup: %s", results)
     return results

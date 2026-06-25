@@ -18,7 +18,14 @@ from app.config import settings
 from app.db.neo4j import create_nodes_and_edges
 from app.db.postgres import AsyncSessionLocal
 from app.gateway import GatewayError, chat_completion
-from app.models.db import Course, KnowledgeEdge, KnowledgeNode, Video, VideoFrame
+from app.models.db import (
+    Course,
+    CourseMaterial,
+    KnowledgeEdge,
+    KnowledgeNode,
+    Video,
+    VideoFrame,
+)
 from app.services.embedding_service import encode_text
 from app.services.model_providers import OpenAICompatibleProvider, ProviderError
 
@@ -83,6 +90,32 @@ async def _load_video_and_frames(
             frames = list(frame_result.scalars().all())
 
     return course, video, frames
+
+
+async def _load_course_materials(course_id: str) -> list[str]:
+    """Load extracted text snippets from uploaded PDF/image materials."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(CourseMaterial)
+            .where(
+                CourseMaterial.course_id == course_id,
+                CourseMaterial.status.in_(["completed", "completed_with_warning"]),
+                CourseMaterial.extracted_text.isnot(None),
+            )
+            .order_by(CourseMaterial.created_at.desc())
+        )
+        materials = list(result.scalars().all())
+
+    snippets: list[str] = []
+    for m in materials:
+        text = (m.extracted_text or "").strip()
+        if not text:
+            continue
+        # Keep enough context to be useful but avoid blowing up the prompt.
+        if len(text) > 3000:
+            text = text[:3000] + "…"
+        snippets.append(text)
+    return snippets
 
 
 def _sample_frame_paths(frames: list[VideoFrame], count: int = SAMPLE_FRAME_COUNT) -> list[str]:
@@ -229,9 +262,10 @@ def _build_prompt(
     frame_paths: list[str],
     captions: list[str],
     transcript: str | None,
+    materials: list[str] | None = None,
 ) -> str:
     lines = [
-        "你是一位课程知识图谱构建专家。请根据课程信息、视频关键帧画面描述和字幕，抽取知识点节点和它们之间的先修关系。",
+        "你是一位课程知识图谱构建专家。请根据课程信息、视频关键帧画面描述、字幕以及上传的课程资料，抽取知识点节点和它们之间的先修关系。",
         "",
         "## 任务要求",
         "1. 节点应覆盖课程中的核心概念、定理、方法或技能。",
@@ -248,6 +282,12 @@ def _build_prompt(
             f"{transcript}\n"
             "</transcript>"
         )
+
+    materials = materials or []
+    if materials:
+        lines.append("\n## 课程参考资料（PDF / 图片提取文本，仅作参考）")
+        for idx, text in enumerate(materials, start=1):
+            lines.append(f"\n### 资料 {idx}\n{text}")
 
     lines.append(f"\n## 关键帧画面描述（共 {len(frame_paths)} 张）")
     for idx, (path, caption) in enumerate(zip(frame_paths, captions, strict=False), start=1):
@@ -536,7 +576,11 @@ async def extract_knowledge_graph(
     # can use meaningful text instead of the placeholder "Frame at Xs".
     await _persist_frame_captions(frames, frame_paths, captions)
 
-    prompt = _build_prompt(course, frame_paths, captions, transcript)
+    # Include supplementary PDF/image text so the graph covers material not
+    # visually present in the sampled frames.
+    materials = await _load_course_materials(course_id)
+
+    prompt = _build_prompt(course, frame_paths, captions, transcript, materials)
     messages = _build_messages(prompt, frame_paths)
 
     try:

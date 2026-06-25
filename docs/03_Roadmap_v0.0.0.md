@@ -149,8 +149,8 @@
 
 | 检查项 | 命令 | 当前状态 |
 | --- | --- | --- |
-| 后端单元测试 | `cd backend && pytest -q` | 163 passed / 0 failed |
-| 前端单元测试 | `cd frontend && npm run test` | 19 passed / 0 failed |
+| 后端单元测试 | `cd backend && pytest -q` | 165 passed / 0 failed |
+| 前端单元测试 | `cd frontend && npm run test` | 21 passed / 0 failed |
 | 前端构建 | `cd frontend && npm run build` | 通过 |
 | 前端安全审计 | `cd frontend && npm audit` | 0 vulnerabilities |
 | Docker Compose 全链路 | `docker compose up --build` | 配置已修复，待在有 Docker 环境运行 |

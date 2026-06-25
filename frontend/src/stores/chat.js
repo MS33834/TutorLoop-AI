@@ -79,6 +79,28 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function updateAssistantMessageById(messageId, content) {
+    const key = roomKey.value
+    const list = messagesMap.value.get(key)
+    if (!list || !list.length) return
+    const index = list.findIndex((m) => m.id === messageId && m.role === 'assistant')
+    if (index === -1) return
+    const next = list.slice()
+    next[index] = { ...next[index], content }
+    messagesMap.value.set(key, next)
+  }
+
+  function appendAssistantTokenById(messageId, token) {
+    const key = roomKey.value
+    const list = messagesMap.value.get(key)
+    if (!list || !list.length) return
+    const index = list.findIndex((m) => m.id === messageId && m.role === 'assistant')
+    if (index === -1) return
+    const next = list.slice()
+    next[index] = { ...next[index], content: next[index].content + token }
+    messagesMap.value.set(key, next)
+  }
+
   function clearCurrentRoom() {
     messagesMap.value.delete(roomKey.value)
   }
@@ -94,6 +116,8 @@ export const useChatStore = defineStore('chat', () => {
     clearAll,
     addMessage,
     appendAssistantToken,
-    updateLastAssistantContent
+    appendAssistantTokenById,
+    updateLastAssistantContent,
+    updateAssistantMessageById
   }
 })

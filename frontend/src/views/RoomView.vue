@@ -61,6 +61,13 @@ const nodeInteractions = ref([])
 const nodeDetailLoading = ref(false)
 const nodeDetailError = ref('')
 
+const fileInputRef = ref(null)
+const imageUploadLoading = ref(false)
+
+const isOnline = ref(navigator.onLine !== false)
+const pendingQueue = ref([])
+const isRetrying = ref(false)
+
 const requirePassword = ref(false)
 const requiresLogin = ref(false)
 const roomPassword = ref('')
@@ -74,6 +81,7 @@ let isUnmounted = false
 
 const courseId = computed(() => course.value?.id || '')
 const roomUuid = computed(() => room.value?.id || '')
+const videos = computed(() => course.value?.videos || [])
 
 onMounted(() => {
   chat.setRoom(props.slug)
@@ -82,6 +90,8 @@ onMounted(() => {
   // loadCourse() from room.value.session_token.
   // Use sendBeacon on page hide so watch records survive navigation/close.
   window.addEventListener('pagehide', onPageHide)
+  window.addEventListener('online', onNetworkOnline)
+  window.addEventListener('offline', onNetworkOffline)
   loadCourse()
 })
 
@@ -93,6 +103,8 @@ onBeforeUnmount(() => {
   isUnmounted = true
   cancelStream()
   window.removeEventListener('pagehide', onPageHide)
+  window.removeEventListener('online', onNetworkOnline)
+  window.removeEventListener('offline', onNetworkOffline)
   sendWatchRecord(true)
 })
 
@@ -151,8 +163,8 @@ async function loadCourse() {
       await recordRoomEntry()
     }
     course.value = await apiFetch(`/api/courses/${room.value.course_id}`)
-    const videos = course.value?.videos || []
-    currentVideo.value = videos[0] || null
+    const courseVideos = course.value?.videos || []
+    currentVideo.value = courseVideos[0] || null
     await loadMastery()
     await loadRecommendation()
   } catch (err) {
@@ -229,8 +241,78 @@ function onSeek(seconds) {
   videoPlayerRef.value?.seekTo?.(seconds)
 }
 
+function switchVideo(video) {
+  if (!video || video.id === currentVideo.value?.id) return
+  // Flush watch time for the outgoing video before switching.
+  sendWatchRecord()
+  currentVideo.value = video
+  // The watcher on currentVideo will reset watchSeconds and load subtitles.
+}
+
 function clearScreenshot() {
   screenshot.value = ''
+}
+
+function triggerImageUpload() {
+  fileInputRef.value?.click()
+}
+
+function compressImage(dataURL, maxWidth = 1280, quality = 0.8) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      let { width, height } = img
+      if (width > maxWidth) {
+        height = Math.round((height * maxWidth) / width)
+        width = maxWidth
+      }
+      canvas.width = width
+      canvas.height = height
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        reject(new Error('无法获取画布上下文'))
+        return
+      }
+      ctx.drawImage(img, 0, 0, width, height)
+      resolve(canvas.toDataURL('image/jpeg', quality))
+    }
+    img.onerror = () => reject(new Error('图片加载失败'))
+    img.src = dataURL
+  })
+}
+
+async function onImageSelected(event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+
+  imageUploadLoading.value = true
+  error.value = ''
+
+  try {
+    if (!file.type.startsWith('image/')) {
+      throw new Error('请选择图片文件（JPG/PNG）')
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      throw new Error('图片过大，请选择 8MB 以内的图片')
+    }
+
+    const dataURL = await new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = (e) => resolve(e.target.result)
+      reader.onerror = () => reject(new Error('读取图片失败'))
+      reader.readAsDataURL(file)
+    })
+
+    const compressed = await compressImage(dataURL)
+    screenshot.value = compressed
+    scrollToBottom()
+  } catch (err) {
+    error.value = err.message || '图片处理失败'
+  } finally {
+    imageUploadLoading.value = false
+    event.target.value = ''
+  }
 }
 
 async function scrollToBottom() {
@@ -243,6 +325,56 @@ async function scrollToBottom() {
 function handleError(message) {
   error.value = message
   loading.value = false
+}
+
+function onNetworkOnline() {
+  isOnline.value = true
+  error.value = ''
+  processPendingQueue()
+}
+
+function onNetworkOffline() {
+  isOnline.value = false
+  error.value = '网络已断开，问题会暂存并在恢复后自动发送'
+}
+
+async function processPendingQueue() {
+  if (isRetrying.value || pendingQueue.value.length === 0 || !isOnline.value) return
+  isRetrying.value = true
+  while (pendingQueue.value.length > 0 && isOnline.value) {
+    const item = pendingQueue.value[0]
+    const { body, assistantMessageId } = item
+    if (assistantMessageId) {
+      chat.updateAssistantMessageById(assistantMessageId, '（网络已恢复，正在重试…）')
+    } else {
+      chat.updateLastAssistantContent('（网络已恢复，正在重试…）')
+    }
+    try {
+      await _sendStreamRequest(body, assistantMessageId)
+      pendingQueue.value.shift()
+    } catch (err) {
+      if (err.name === 'AbortError' || err.code === 'ABORTED') {
+        // User cancelled the retry; keep it in queue for next online event.
+        break
+      }
+      if (!isOnline.value || err.code === 'NETWORK_ERROR' || err.message?.includes('网络')) {
+        if (assistantMessageId) {
+          chat.updateAssistantMessageById(assistantMessageId, '（网络仍不可用，恢复后继续重试）')
+        } else {
+          chat.updateLastAssistantContent('（网络仍不可用，恢复后继续重试）')
+        }
+        break
+      }
+      // Non-network error: remove from queue to avoid infinite retry.
+      pendingQueue.value.shift()
+      if (assistantMessageId) {
+        chat.updateAssistantMessageById(assistantMessageId, `（发送失败：${err.message}）`)
+      } else {
+        chat.updateLastAssistantContent(`（发送失败：${err.message}）`)
+      }
+    }
+  }
+  isRetrying.value = false
 }
 
 async function sendWatchRecord(useBeacon = false) {
@@ -448,6 +580,96 @@ function closeNodeDetail() {
   nodeDetailError.value = ''
 }
 
+async function _sendStreamRequest(body, assistantMessageId = null) {
+  // Execute the SSE chat request. Tokens are appended to the assistant message
+  // identified by assistantMessageId, or the last assistant message if not provided.
+  // 取消上一个仍在进行的流
+  cancelStream()
+  streamAbortController = new AbortController()
+
+  // 尝试发起流式请求；遇到 401 时先尝试静默刷新令牌再重试一次。
+  let response = null
+  let refreshed = false
+  while (true) {
+    response = await fetch(`${API_BASE}/api/chat`, {
+      method: 'POST',
+      signal: streamAbortController.signal,
+      // credentials: 'include' 让 HttpOnly refresh cookie 能被发送/接收。
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(user.token ? { Authorization: `Bearer ${user.token}` } : {})
+      },
+      body: JSON.stringify(body)
+    })
+
+    if (response.status === 401) {
+      // 尚未刷新过时尝试一次静默刷新（refresh token 由 HttpOnly cookie 携带）。
+      if (!refreshed) {
+        refreshed = true
+        const newToken = await user.refreshAccessToken()
+        if (newToken) {
+          // 丢弃当前响应，用新令牌重试。
+          try { await response.body?.cancel() } catch { /* ignore */ }
+          continue
+        }
+      }
+      // 刷新失败或已刷新过 —— 清除登录态并跳转。
+      user.clearAuth()
+      router.push({ path: '/login', query: { redirect: route.fullPath } })
+      throw new Error('登录已过期，请重新登录')
+    }
+    break
+  }
+
+  if (!response.ok) {
+    throw new Error(`请求失败：${response.status}`)
+  }
+
+  const reader = response.body.getReader()
+  streamReader = reader
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    if (isUnmounted) {
+      reader.cancel().catch(() => {})
+      break
+    }
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('data:')) continue
+
+      const payload = trimmed.slice(5).trim()
+      if (payload === '[DONE]') continue
+
+      try {
+        const data = JSON.parse(payload)
+          if (data.type === 'token' && data.content) {
+            if (assistantMessageId) {
+              chat.appendAssistantTokenById(assistantMessageId, data.content)
+            } else {
+              chat.appendAssistantToken(data.content)
+            }
+            await scrollToBottom()
+          } else if (data.type === 'error') {
+            throw new Error(data.message || '辅导回复出错，请重试')
+          }
+      } catch {
+        // ignore malformed SSE lines
+      }
+    }
+  }
+}
+
 async function send(needAnswer = false) {
   const text = input.value.trim()
   if ((!text && !screenshot.value) || loading.value) return
@@ -463,123 +685,77 @@ async function send(needAnswer = false) {
   await scrollToBottom()
 
   chat.addMessage('assistant', '')
+  const assistantMessageId = chat.messages[chat.messages.length - 1]?.id || null
 
-  // 取消上一个仍在进行的流
-  cancelStream()
-  streamAbortController = new AbortController()
+  const history = chat.messages
+    .filter((m) => m.content || m.role === 'user')
+    .map((m) => ({ role: m.role, content: m.content }))
+  const body = {
+    messages: history,
+    room_slug: props.slug,
+    timestamp: currentTime.value,
+    video_id: currentVideo.value?.id || null,
+    need_answer: needAnswer
+  }
+
+  if (screenshot.value) {
+    body.screenshot = screenshot.value
+  }
+
+  if (needAnswer) {
+    // 用户明确选择直接看答案，此时在聊天记录中追加系统提示占位。
+    chat.updateLastAssistantContent('（已切换为直接解答模式）')
+  }
+
+  screenshot.value = ''
+
+  const queueItem = { body, assistantMessageId }
+
+  // 离线时暂存问题，网络恢复后自动重试，避免学生问题丢失。
+  if (!isOnline.value) {
+    pendingQueue.value.push(queueItem)
+    if (assistantMessageId) {
+      chat.updateAssistantMessageById(assistantMessageId, '（网络已断开，问题已保存，恢复后自动发送）')
+    } else {
+      chat.updateLastAssistantContent('（网络已断开，问题已保存，恢复后自动发送）')
+    }
+    loading.value = false
+    await scrollToBottom()
+    return
+  }
 
   try {
-    const history = chat.messages
-      .filter((m) => m.content || m.role === 'user')
-      .map((m) => ({ role: m.role, content: m.content }))
-    const body = {
-      messages: history,
-      room_slug: props.slug,
-      timestamp: currentTime.value,
-      video_id: currentVideo.value?.id || null,
-      need_answer: needAnswer
-    }
-
-    if (screenshot.value) {
-      body.screenshot = screenshot.value
-    }
-
-    if (needAnswer) {
-      // 用户明确选择直接看答案，此时在聊天记录中追加系统提示占位。
-      chat.updateLastAssistantContent('（已切换为直接解答模式）')
-    }
-
-    // 尝试发起流式请求；遇到 401 时先尝试静默刷新令牌再重试一次。
-    let response = null
-    let refreshed = false
-    while (true) {
-      response = await fetch(`${API_BASE}/api/chat`, {
-        method: 'POST',
-        signal: streamAbortController.signal,
-        // credentials: 'include' 让 HttpOnly refresh cookie 能被发送/接收。
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(user.token ? { Authorization: `Bearer ${user.token}` } : {})
-        },
-        body: JSON.stringify(body)
-      })
-
-      if (response.status === 401) {
-        // 尚未刷新过时尝试一次静默刷新（refresh token 由 HttpOnly cookie 携带）。
-        if (!refreshed) {
-          refreshed = true
-          const newToken = await user.refreshAccessToken()
-          if (newToken) {
-            // 丢弃当前响应，用新令牌重试。
-            try { await response.body?.cancel() } catch { /* ignore */ }
-            continue
-          }
-        }
-        // 刷新失败或已刷新过 —— 清除登录态并跳转。
-        user.clearAuth()
-        router.push({ path: '/login', query: { redirect: route.fullPath } })
-        throw new Error('登录已过期，请重新登录')
-      }
-      break
-    }
-
-    if (!response.ok) {
-      throw new Error(`请求失败：${response.status}`)
-    }
-
-    const reader = response.body.getReader()
-    streamReader = reader
-    const decoder = new TextDecoder('utf-8')
-    let buffer = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      if (isUnmounted) {
-        reader.cancel().catch(() => {})
-        break
-      }
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('data:')) continue
-
-        const payload = trimmed.slice(5).trim()
-        if (payload === '[DONE]') continue
-
-        try {
-          const data = JSON.parse(payload)
-          if (data.type === 'token' && data.content) {
-            chat.appendAssistantToken(data.content)
-            await scrollToBottom()
-          } else if (data.type === 'error') {
-            handleError(data.message || '辅导回复出错，请重试')
-          }
-        } catch {
-          // ignore malformed SSE lines
-        }
-      }
-    }
+    await _sendStreamRequest(body, assistantMessageId)
   } catch (err) {
-    if (err.name === 'AbortError') {
+    if (err.name === 'AbortError' || err.code === 'ABORTED') {
       // 用户主动取消或组件卸载，静默处理
-      chat.updateLastAssistantContent('（已停止生成）')
+      if (assistantMessageId) {
+        chat.updateAssistantMessageById(assistantMessageId, '（已停止生成）')
+      } else {
+        chat.updateLastAssistantContent('（已停止生成）')
+      }
+    } else if (!isOnline.value || err.code === 'NETWORK_ERROR' || err.message?.includes('网络')) {
+      // 网络异常：把请求体加入待重试队列，稍后自动重发。
+      pendingQueue.value.push(queueItem)
+      if (assistantMessageId) {
+        chat.updateAssistantMessageById(assistantMessageId, '（网络异常，恢复后自动重试）')
+      } else {
+        chat.updateLastAssistantContent('（网络异常，恢复后自动重试）')
+      }
+      handleError('网络异常，已暂存问题，恢复后自动重试')
     } else {
       // 更新占位气泡，避免 UI 卡在"正在为你梳理思路…"
-      chat.updateLastAssistantContent('（生成失败，请重试）')
+      if (assistantMessageId) {
+        chat.updateAssistantMessageById(assistantMessageId, '（生成失败，请重试）')
+      } else {
+        chat.updateLastAssistantContent('（生成失败，请重试）')
+      }
       handleError(err.message || '网络错误，请稍后重试')
     }
   } finally {
     loading.value = false
     streamAbortController = null
     streamReader = null
-    screenshot.value = ''
     await scrollToBottom()
   }
 }
@@ -643,6 +819,20 @@ function onKeydown(e) {
           <h2 class="course-title">{{ room?.title || course?.title || '学习房间' }}</h2>
           <p v-if="room?.welcome_message" class="course-welcome">{{ room.welcome_message }}</p>
           <p class="course-desc">{{ course?.description || '' }}</p>
+
+          <div v-if="videos.length > 1" class="video-tabs">
+            <button
+              v-for="video in videos"
+              :key="video.id"
+              class="video-tab"
+              :class="{ active: video.id === currentVideo?.id }"
+              type="button"
+              @click="switchVideo(video)"
+            >
+              {{ video.title || '未命名视频' }}
+            </button>
+          </div>
+
           <p class="room-slug">房间号：{{ props.slug }}</p>
         </div>
       </div>
@@ -685,6 +875,13 @@ function onKeydown(e) {
           </div>
 
           <div v-if="error" class="error-banner">{{ error }}</div>
+        </div>
+
+        <div v-if="!isOnline || pendingQueue.length" class="network-bar">
+          <span v-if="!isOnline" class="offline-hint">网络已断开</span>
+          <span v-else-if="pendingQueue.length" class="pending-hint">
+            {{ pendingQueue.length }} 条消息待发送
+          </span>
         </div>
 
         <div v-if="showFeedback" class="feedback-bar">
@@ -740,6 +937,22 @@ function onKeydown(e) {
         </div>
 
         <div class="input-area">
+          <input
+            ref="fileInputRef"
+            type="file"
+            accept="image/*"
+            class="hidden-file-input"
+            @change="onImageSelected"
+          />
+          <button
+            class="attach-btn"
+            type="button"
+            title="上传图片/拍照"
+            :disabled="imageUploadLoading || loading"
+            @click="triggerImageUpload"
+          >
+            {{ imageUploadLoading ? '…' : '📎' }}
+          </button>
           <textarea
             v-model="input"
             class="input"
@@ -1019,6 +1232,16 @@ function onKeydown(e) {
   text-align: center;
 }
 
+.network-bar {
+  flex-shrink: 0;
+  padding: 0.375rem 0.75rem;
+  background: #fff7ed;
+  color: #c2410c;
+  font-size: 0.8125rem;
+  text-align: center;
+  border-top: 1px solid #ffedd5;
+}
+
 .feedback-bar {
   flex-shrink: 0;
   padding: 0.625rem 0.75rem;
@@ -1115,6 +1338,36 @@ function onKeydown(e) {
   padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
   background: #ffffff;
   border-top: 1px solid #e5e7eb;
+}
+
+.hidden-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.attach-btn {
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 50%;
+  background: #f9fafb;
+  color: #4b5563;
+  font-size: 1rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.attach-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .input {
@@ -1226,6 +1479,30 @@ function onKeydown(e) {
   font-size: 0.875rem;
   color: #4b5563;
   line-height: 1.5;
+}
+
+.video-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.625rem 0;
+}
+
+.video-tab {
+  padding: 0.375rem 0.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 9999px;
+  background: #f9fafb;
+  color: #4b5563;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.video-tab.active {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #2563eb;
 }
 
 .node-detail-modal {

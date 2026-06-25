@@ -12,6 +12,7 @@ from app.db.neo4j import close_driver
 from app.db.postgres import close_db, init_db
 from app.tasks.jobs import (
     build_knowledge_graph_task,
+    cleanup_expired_anonymous_data_task,
     cleanup_screenshots_task,
     probe_keys_health_task,
     process_video_task,
@@ -78,6 +79,7 @@ class WorkerSettings:
         process_video_task,
         build_knowledge_graph_task,
         cleanup_screenshots_task,
+        cleanup_expired_anonymous_data_task,
         probe_keys_health_task,
     ]
     max_jobs = int(os.environ.get("ARQ_MAX_JOBS", "10"))
@@ -88,6 +90,8 @@ class WorkerSettings:
     cron_jobs = [
         # Delete expired screenshot temp files daily at 03:00 UTC.
         cron(cleanup_screenshots_task, hour=3, minute=0),
+        # Purge stale anonymous data daily at 04:00 UTC.
+        cron(cleanup_expired_anonymous_data_task, hour=4, minute=0),
         # Probe AI key health every 30 seconds (TechSpec §3.1 heartbeat).
         cron(probe_keys_health_task, second={0, 30}),
     ]

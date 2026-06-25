@@ -72,6 +72,32 @@ describe('chat store', () => {
     expect(chat.messages[0].content).toBe('new')
   })
 
+  it('updateAssistantMessageById replaces a specific assistant message', () => {
+    const chat = useChatStore()
+    chat.setRoom('room-a')
+    chat.addMessage('assistant', 'first')
+    const targetId = chat.messages[0].id
+    chat.addMessage('assistant', 'last')
+
+    chat.updateAssistantMessageById(targetId, 'updated')
+
+    expect(chat.messages[0].content).toBe('updated')
+    expect(chat.messages[1].content).toBe('last')
+  })
+
+  it('appendAssistantTokenById appends to a specific assistant message', () => {
+    const chat = useChatStore()
+    chat.setRoom('room-a')
+    chat.addMessage('assistant', 'he')
+    const targetId = chat.messages[0].id
+    chat.addMessage('assistant', 'other')
+
+    chat.appendAssistantTokenById(targetId, 'llo')
+
+    expect(chat.messages[0].content).toBe('hello')
+    expect(chat.messages[1].content).toBe('other')
+  })
+
   it('clearAll removes all rooms and resets state', () => {
     const chat = useChatStore()
     chat.setRoom('room-a')
