@@ -8,13 +8,13 @@ server {
     # Hide nginx version to reduce fingerprinting surface.
     server_tokens off;
 
-    # Baseline security headers (the SPA is served here; the API sets its own
-    # headers on responses, these cover the static assets and index.html).
+    # Baseline security headers. The API base URL is substituted at image
+    # build time so the SPA can fetch the cross-origin backend and load media from it.
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "DENY" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     add_header Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()" always;
-    add_header Content-Security-Policy "default-src 'self'; frame-ancestors 'none'; connect-src 'self'; img-src 'self' data:; media-src 'self'; object-src 'none'; base-uri 'self';" always;
+    add_header Content-Security-Policy "default-src 'self'; frame-ancestors 'none'; connect-src 'self' ${VITE_API_BASE_URL}; img-src 'self' data: ${VITE_API_BASE_URL}; media-src 'self' ${VITE_API_BASE_URL}; object-src 'none'; base-uri 'self';" always;
 
     gzip on;
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
