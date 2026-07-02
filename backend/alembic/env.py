@@ -19,8 +19,10 @@ from app.models.db import Base as AppBase  # noqa: E402
 # access to the values within the .ini file in use.
 config = context.config
 
-# Override DB URL from application settings
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# Use DATABASE_URL from environment if set (CI / Docker), otherwise fall
+# back to the application settings. alembic.ini leaves sqlalchemy.url empty.
+db_url = os.environ.get("DATABASE_URL") or config.get_main_option("sqlalchemy.url") or settings.database_url
+config.set_main_option("sqlalchemy.url", db_url)
 
 # Interpret the config file for Python logging.
 if config.config_file_name is not None:

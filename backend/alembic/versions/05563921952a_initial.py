@@ -21,7 +21,11 @@ def upgrade() -> None:
     from app.models.db import Base
 
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    op.run_sync(Base.metadata.create_all)
+
+    # Use the current connection to run metadata.create_all synchronously.
+    # op.run_sync does not exist in alembic <= 1.18; use the bind directly.
+    bind = op.get_bind()
+    Base.metadata.create_all(bind)
 
     # Approximate nearest-neighbor indexes for pgvector
     op.execute(
@@ -48,4 +52,6 @@ def downgrade() -> None:
 
     op.execute("DROP INDEX IF EXISTS idx_video_frames_embedding")
     op.execute("DROP INDEX IF EXISTS idx_knowledge_nodes_embedding")
-    op.run_sync(Base.metadata.drop_all)
+
+    bind = op.get_bind()
+    Base.metadata.drop_all(bind)

@@ -76,6 +76,9 @@
 | 前端构建 | `cd frontend && npm run build` | 通过（PWA generateSW） |
 | 数据库迁移链 | `alembic upgrade head` | 11 个迁移，链连续无断裂 |
 | 前端安全审计 | `cd frontend && npm audit` | 0 vulnerabilities |
+| GitHub CI | 3 jobs (backend/migrations/frontend) | 修复 migrations job（op.run_sync → op.get_bind） |
+| GitHub PR/Issue | 0 PR / 0 Issue | 无待处理项 |
+| 仓库分支 | 仅 main | 无额外分支 |
 
 ---
 
