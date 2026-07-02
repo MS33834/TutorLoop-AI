@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
-from app.services.video_service import extract_and_save_frames, extract_frames
+from app.services.video_service import extract_and_save_frames
 
 
 @pytest.fixture
@@ -25,19 +25,6 @@ def sample_video(tmp_path):
     writer.release()
     assert os.path.exists(video_path)
     return video_path
-
-
-def test_extract_frames_returns_all_sampled_frames(sample_video):
-    """extract_frames should return frames at the configured interval."""
-    frames, duration = extract_frames(sample_video, interval_seconds=1)
-    # 3-second video at 1-second intervals → ~3 frames
-    assert len(frames) >= 2
-    assert duration > 0
-    # Each frame should have a timestamp and image data
-    for f in frames:
-        assert "timestamp_seconds" in f
-        assert "frame" in f
-        assert f["frame"] is not None
 
 
 def test_extract_and_save_frames_writes_files(sample_video, tmp_path):

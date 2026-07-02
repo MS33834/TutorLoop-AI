@@ -6,8 +6,9 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 
+from app.config import settings
 from app.db.postgres import AsyncSessionLocal
 from app.models.db import Interaction, Room, RoomEntrySession, Video
 from app.services.kg_extractor import extract_knowledge_graph
@@ -15,12 +16,16 @@ from app.services.video_service import process_video
 
 logger = logging.getLogger(__name__)
 
-# Screenshots older than this are deleted by the cleanup job.
-SCREENSHOT_RETENTION_DAYS = 7
+# Screenshots older than this are deleted by the cleanup job. Configurable via
+# settings (with a 7-day default) so deployments can tune retention without
+# touching code.
+SCREENSHOT_RETENTION_DAYS = getattr(settings, "screenshot_retention_days", 7)
 # Anonymous interactions and ephemeral sessions older than this are purged.
 ANONYMOUS_DATA_RETENTION_DAYS = int(os.environ.get("ANONYMOUS_DATA_RETENTION_DAYS", "30"))
 # Screenshots are written to the system temp dir with a known prefix.
 # chat.py uses tempfile.mkstemp(prefix="chat_screenshot_", suffix=...).
+# These globs must stay in sync with that prefix; if chat.py ever changes its
+# prefix, update SCREENSHOT_GLOBS accordingly or stale screenshots will leak.
 SCREENSHOT_GLOBS = ("chat_screenshot_*",)
 
 
@@ -207,6 +212,21 @@ async def cleanup_expired_anonymous_data_task(ctx: dict) -> dict:
             delete(RoomEntrySession).where(RoomEntrySession.created_at < cutoff)
         )
         results["stale_sessions_deleted"] = session_result.rowcount
+
+        # Two-phase expired room cleanup: first deactivate rooms whose expiry
+        # has passed (so any in-flight lookups stop surfacing them), then delete
+        # rooms that have been inactive past the retention window. This avoids
+        # hard-deleting a room while a client is still mid-session against it.
+        now = datetime.now(timezone.utc)
+        await session.execute(
+            update(Room)
+            .where(
+                Room.is_active.is_(True),
+                Room.expires_at.isnot(None),
+                Room.expires_at < now,
+            )
+            .values(is_active=False)
+        )
 
         # Delete rooms that have expired and been inactive for the retention window.
         # Use last_activity_at when available; fall back to expires_at/created_at.

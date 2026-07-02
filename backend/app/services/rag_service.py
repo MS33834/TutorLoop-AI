@@ -1,9 +1,12 @@
 """Multimodal RAG retrieval service backed by pgvector."""
 
+import base64
 import logging
+from pathlib import Path
 
 from sqlalchemy import select, text
 
+from app.config import settings
 from app.db.postgres import AsyncSessionLocal
 from app.db.vector_search import search_similar_frames, search_similar_nodes
 from app.models.db import CourseMaterial, Video
@@ -71,6 +74,60 @@ def _row_to_node(row: dict) -> dict:
     }
 
 
+async def _describe_screenshot(screenshot_path: str) -> str | None:
+    """Use the VLM to describe a screenshot, returning None on failure.
+
+    The description is used as a richer query for vector retrieval so that
+    visual context (formulas, diagrams, UI state, error messages) is captured
+    even when the text question alone is ambiguous. Any failure (missing file,
+    VLM unavailable, parse error) returns None so callers can degrade to the
+    timestamp-based frame fallback.
+    """
+    try:
+        data = Path(screenshot_path).read_bytes()
+    except Exception as exc:
+        logger.warning("Could not read screenshot %s: %s", screenshot_path, exc)
+        return None
+
+    b64 = base64.b64encode(data).decode("utf-8")
+    # Screenshots are PNGs from the browser; fall back to JPEG if the extension
+    # is unusual — the data URL mime only affects provider-side sniffing at most.
+    image_block = {
+        "type": "image_url",
+        "image_url": {"url": f"data:image/png;base64,{b64}"},
+    }
+    prompt = (
+        "请用 1-3 句话客观描述这张学习截图中的内容，包括可见的文字、公式、"
+        "图表、代码或界面元素。只输出描述文本，不要输出 JSON 或格式标记。"
+    )
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": prompt}, image_block]}
+    ]
+
+    try:
+        # Reuse the shared VLM provider singleton from kg_extractor so we don't
+        # spin up a second HTTP client pool. Falls back to the gateway when the
+        # dedicated VLM endpoint isn't configured.
+        if settings.vlm_base_url and settings.vlm_api_key:
+            from app.services.kg_extractor import _get_vlm_provider
+
+            provider = _get_vlm_provider()
+            response = await provider.chat_completion(
+                messages=messages,
+                model=settings.vlm_model,
+                temperature=0.2,
+                max_tokens=256,
+            )
+        else:
+            from app.gateway import chat_completion
+
+            response = await chat_completion(messages=messages, model_type="vision")
+        return response["choices"][0]["message"].get("content", "").strip() or None
+    except Exception as exc:
+        logger.warning("VLM screenshot description failed: %s", exc)
+        return None
+
+
 async def retrieve_context(
     video_id: str,
     question: str,
@@ -78,7 +135,19 @@ async def retrieve_context(
     timestamp: float | None = None,
 ) -> dict:
     """Retrieve relevant video frames, knowledge nodes and materials for a question."""
-    question_embedding = encode_text(question)
+    # When a screenshot is attached, describe it with the VLM and fold that
+    # description into the retrieval query. Visual context (formulas, diagrams,
+    # error output) often disambiguates an otherwise vague text question. If the
+    # VLM call fails we transparently fall back to the text-only query, and the
+    # timestamp-based frame retrieval below provides a final safety net.
+    screenshot_description: str | None = None
+    if screenshot_path:
+        screenshot_description = await _describe_screenshot(screenshot_path)
+
+    query_text = question
+    if screenshot_description:
+        query_text = f"{question}\n{screenshot_description}"
+    question_embedding = encode_text(query_text)
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(
@@ -135,6 +204,12 @@ async def _retrieve_course_materials(course_id: str, question: str) -> list[dict
 
     Materials are ranked by token overlap with the question so the most
     pertinent supplementary documents are included in the context window.
+
+    NOTE: this stays a keyword-overlap ranking (not vector similarity) because
+    the CourseMaterial table has no embedding column yet. The screenshot
+    description is intentionally not folded in here — material text is long-form
+    document content, so n-gram overlap on the original question is a better
+    signal than mixing in a short image caption.
     """
     async with AsyncSessionLocal() as session:
         result = await session.execute(

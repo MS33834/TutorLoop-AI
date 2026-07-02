@@ -12,6 +12,33 @@ logger = logging.getLogger(__name__)
 _driver: AsyncDriver | None = None
 _driver_lock = asyncio.Lock()
 
+# Canonical mapping from raw relation labels (as emitted by the KG extractor /
+# editor) to Neo4j relationship types. Keeping this in one place means both
+# writers (create_nodes_and_edges) and readers stay consistent. Unknown labels
+# are uppercased + sanitized so custom relations still work.
+RELATION_TYPE_MAP: dict[str, str] = {
+    "prerequisite": "PREREQUISITE",
+    "prereq": "PREREQUISITE",
+    "next": "NEXT",
+    "related": "RELATED",
+    "related_to": "RELATED",
+}
+
+
+def _normalize_relation(relation: str | None) -> str:
+    """Map a raw relation label to a sanitized Neo4j relationship type.
+
+    Known aliases collapse onto their canonical type via RELATION_TYPE_MAP.
+    Anything else is uppercased and restricted to [A-Z0-9_] (Neo4j requirement),
+    defaulting to PREREQUISITE when the result would be empty.
+    """
+    raw = (relation or "prerequisite").strip().lower()
+    canonical = RELATION_TYPE_MAP.get(raw)
+    if canonical:
+        return canonical
+    sanitized = "".join(c if c.isalnum() or c == "_" else "_" for c in raw.upper())
+    return sanitized or "PREREQUISITE"
+
 
 async def get_driver() -> AsyncDriver:
     """Return a singleton Neo4j async driver."""
@@ -69,11 +96,7 @@ async def create_nodes_and_edges(
     for edge in edges:
         if not edge.get("from") or not edge.get("to"):
             continue
-        relation = (edge.get("relation") or "prerequisite").strip().upper()
-        # Sanitize: Neo4j relationship types must be alphanumeric + underscore.
-        relation = "".join(c if c.isalnum() or c == "_" else "_" for c in relation)
-        if not relation:
-            relation = "PREREQUISITE"
+        relation = _normalize_relation(edge.get("relation"))
         edges_by_type.setdefault(relation, []).append(
             {"from": edge["from"], "to": edge["to"], "relation": edge.get("relation", "prerequisite")}
         )
@@ -166,7 +189,14 @@ async def get_graph(course_id: str) -> dict:
 
 
 async def get_prerequisites(node_id: str, course_id: str | None = None) -> list[dict]:
-    """Return all prerequisite nodes for a given node_id."""
+    """Return all prerequisite nodes for a given node_id.
+
+    Kept for backward compatibility — ``get_prerequisites`` is re-exported via
+    ``app.db.__init__`` and consumed by routers/services. Because
+    ``_normalize_relation`` collapses ``prereq``/``prerequisite`` onto the
+    canonical ``PREREQUISITE`` type at write time, matching only that type here
+    is sufficient to recover all prerequisite edges.
+    """
     driver = await get_driver()
     prereqs = []
 

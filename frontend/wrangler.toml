@@ -1,8 +1,10 @@
 name = "tutorloop-ai"
-compatibility_date = "2026-06-21"
+compatibility_date = "2026-07-02"
 
 [env.production]
-compatibility_date = "2026-06-21"
+compatibility_date = "2026-07-02"
 
-# Cloudflare Pages build output directory
+# Cloudflare Pages build output directory.
+# The build itself runs `npm run build` (see package.json); this only tells
+# Cloudflare where the produced assets live so they can be deployed to the edge.
 pages_build_output_dir = "dist"

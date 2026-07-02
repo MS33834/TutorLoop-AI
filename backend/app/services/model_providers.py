@@ -1,6 +1,7 @@
 """Pluggable LLM/VLM provider interface and registry."""
 
 import base64
+import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -214,7 +215,7 @@ class OpenAICompatibleProvider(ModelProvider):
                     if data == "[DONE]":
                         break
                     try:
-                        chunk = __import__("json").loads(data)
+                        chunk = json.loads(data)
                         delta = (
                             chunk.get("choices", [{}])[0]
                             .get("delta", {})
@@ -224,8 +225,6 @@ class OpenAICompatibleProvider(ModelProvider):
                             yield delta
                     except Exception:
                         continue
-        except httpx.HTTPStatusError as exc:
-            raise _classify_http_error(exc.response.status_code, str(exc)) from exc
         except httpx.TimeoutException as exc:
             raise ProviderError(f"request timeout: {exc}", status_code=504) from exc
         except httpx.RequestError as exc:
@@ -252,8 +251,6 @@ class OpenAICompatibleProvider(ModelProvider):
             if response.status_code >= 400:
                 raise _classify_http_error(response.status_code, response.text)
             return cast(dict[str, Any], response.json())
-        except httpx.HTTPStatusError as exc:
-            raise _classify_http_error(exc.response.status_code, str(exc)) from exc
         except httpx.TimeoutException as exc:
             raise ProviderError(f"request timeout: {exc}", status_code=504) from exc
         except httpx.RequestError as exc:

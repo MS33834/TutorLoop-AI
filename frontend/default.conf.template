@@ -14,13 +14,19 @@ server {
     add_header X-Frame-Options "DENY" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     add_header Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()" always;
-    add_header Content-Security-Policy "default-src 'self'; frame-ancestors 'none'; connect-src 'self' ${VITE_API_BASE_URL}; img-src 'self' data: ${VITE_API_BASE_URL}; media-src 'self' ${VITE_API_BASE_URL}; object-src 'none'; base-uri 'self';" always;
+    add_header Content-Security-Policy "default-src 'self'; frame-ancestors 'none'; connect-src 'self' ${VITE_API_BASE_URL}; img-src 'self' data: ${VITE_API_BASE_URL}; media-src 'self' ${VITE_API_BASE_URL}; object-src 'none'; base-uri 'self'; style-src 'self' 'unsafe-inline';" always;
 
     gzip on;
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
 
     location / {
         try_files $uri $uri/ /index.html;
+    }
+
+    # index.html must never be cached, otherwise users get a stale SPA shell
+    # after a deploy even when the hashed JS/CSS assets have changed.
+    location = /index.html {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
     }
 
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {

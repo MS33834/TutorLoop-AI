@@ -41,13 +41,33 @@ class MasteryGapStrategy(RecommendationStrategy):
 
 
 class BalancedStrategy(RecommendationStrategy):
-    """Balance mastery gap, depth, and estimated difficulty."""
+    """Balance mastery gap and prerequisite depth.
+
+    The docstring previously advertised a "difficulty" factor, but no
+    difficulty signal is available yet, so the strategy only combines the
+    mastery gap (how far the learner is from the threshold) with the
+    prerequisite depth (shallower nodes are preferred so foundational topics
+    are tackled first). The two weights default to 0.6 / 0.4 so they sum to
+    1.0; a ``difficulty_weight`` slot is reserved for when a difficulty
+    estimate becomes available.
+    """
 
     name = "balanced"
 
-    def __init__(self, gap_weight: float = 0.6, depth_weight: float = 0.3):
-        self.gap_weight = gap_weight
-        self.depth_weight = depth_weight
+    def __init__(
+        self,
+        gap_weight: float = 0.6,
+        depth_weight: float = 0.4,
+        difficulty_weight: float = 0.0,
+    ):
+        # Ensure the active weights sum to 1.0 so scores stay normalised.
+        total = gap_weight + depth_weight + difficulty_weight
+        if total <= 0:
+            gap_weight, depth_weight, difficulty_weight = 0.6, 0.4, 0.0
+            total = 1.0
+        self.gap_weight = gap_weight / total
+        self.depth_weight = depth_weight / total
+        self.difficulty_weight = difficulty_weight / total
 
     def rank(
         self,

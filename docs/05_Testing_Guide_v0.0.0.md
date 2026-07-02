@@ -26,8 +26,15 @@ cd backend
 python -m pytest -q
 ```
 
-- 当前基线：**163 passed / 0 failed**。
+- 当前基线：**165 passed / 0 failed**。
 - 新增功能必须配套测试，PR 不允许降低整体覆盖率。
+
+带覆盖率收集（与 CI 一致，需要 `requirements-dev.txt` 中的 `pytest-cov`）：
+
+```bash
+cd backend
+pytest --cov=app --cov-report=term-missing -q
+```
 
 ### 2.2 前端单元/集成测试
 
@@ -36,11 +43,18 @@ cd frontend
 npm run test
 ```
 
-- 当前基线：**19 passed / 0 failed**。
+- 当前基线：**21 passed / 0 failed**。
 - 覆盖范围：
   - `stores/user.js`：token 内存存储、JWT 过期判断、refresh 去重、logout。
   - `stores/chat.js`：房间隔离、消息追加、SSE token 拼接、清空。
   - `api/client.js`：GET 去重、5xx 重试、401 刷新重试、错误详情提取。
+
+带覆盖率收集（需要 `@vitest/coverage-v8`，见第 6 节）：
+
+```bash
+cd frontend
+npx vitest run --coverage
+```
 
 ### 2.3 前端构建与安全审计
 
@@ -52,6 +66,18 @@ npm audit
 
 - `npm run build` 必须零错误。
 - `npm audit` 必须 **0 vulnerabilities**；发现漏洞后立即升级依赖。
+
+### 2.4 数据库迁移校验
+
+CI 在独立的 `migrations` job 中使用 pgvector 服务容器从空库执行 `alembic upgrade head`，
+确保迁移链可在全新数据库上完整应用。本地可手动复现：
+
+```bash
+cd backend
+# 指向一个空的 Postgres 实例（需已安装 pgvector 扩展）
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/tutorloop \
+  alembic upgrade head
+```
 
 ---
 
@@ -102,3 +128,19 @@ docker compose up --build -d
 - 每次依赖升级后执行 `npm audit`。
 - 每次修改 `docker-compose.yml`、Dockerfile、K8s YAML 后执行一次 `docker compose up --build`。
 - 生产发布前对照第 4 节检查清单逐项确认。
+
+---
+
+## 6. CI 流水线
+
+`.github/workflows/ci.yml` 在每次 push/PR 到 `main` 时运行三个 job：
+
+| Job | 内容 | 阻断性 |
+| --- | --- | --- |
+| `backend` | ruff check（完整规则集 `E,W,F,I,N,UP,B,C4,SIM`）、ruff format --check、mypy、compileall、`pytest --cov`、Docker 构建 | lint/format/mypy 非阻断（continue-on-error，历史债务清偿后转为阻断）；pytest 与 Docker 构建阻断 |
+| `migrations` | 使用 pgvector 服务容器从空库执行 `alembic upgrade head` 校验迁移链 | 阻断 |
+| `frontend` | `npm run test`、`vitest run --coverage`、`npm run build`、Docker 构建 | 单元测试与构建阻断；coverage 非阻断 |
+
+> **前端覆盖率依赖**：`vitest run --coverage` 需要 `@vitest/coverage-v8` 加入 `frontend/package.json` 的 devDependencies。在补上该依赖前，CI 中的 coverage 步骤以 `continue-on-error: true` 运行，不影响流水线通过。补上后即可移除该标记并转为阻断。
+
+> **后端 lint 过渡期**：完整 ruff 规则集与 format/mypy 当前因历史风格债务（UP045、B008、B905 等）以非阻断方式运行，便于团队逐步修复。本地可用 `ruff check --fix app tests` 与 `ruff format app tests` 推进清偿。

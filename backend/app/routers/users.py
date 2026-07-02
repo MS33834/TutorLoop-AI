@@ -6,15 +6,18 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 from app.db.postgres import AsyncSessionLocal
 from app.limiter import limiter
-from app.models.db import Interaction, Room, User
+from app.models.db import Interaction, KnowledgeNode, Room, User, VideoProgress
 from app.schemas import (
     InteractionCreate,
     InteractionResponse,
     MasteryItem,
     RecommendationResponse,
     ReportResponse,
+    VideoProgressUpdate,
 )
 from app.services import bkt_engine, recommendation, report_service
 from app.services.auth_service import (
@@ -25,6 +28,15 @@ from app.services.auth_service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Best-effort import of MasterySnapshot. The table is added by another
+# developer (db.py); if it is not present yet we fall back to the snapshot
+# logic in mastery_curve. Importing defensively keeps this router loadable
+# even when the model has not landed.
+try:
+    from app.models.db import MasterySnapshot  # type: ignore
+except ImportError:  # pragma: no cover - depends on sibling work landing
+    MasterySnapshot = None  # type: ignore[assignment]
 
 
 async def _require_room_for_anonymous(room_id: str | None) -> Room | None:
@@ -207,7 +219,10 @@ async def get_my_timeline(
         elif i.is_correct is False:
             bucket["incorrect"] += 1
 
-        week = i.created_at.strftime("%Y-W%W")
+        # ISO week numbering (%G year + %V week) so a week spanning a year
+        # boundary is reported consistently (e.g. 2025-W01) instead of being
+        # split across %Y-W%W which uses Sunday-based week 00 for partial weeks.
+        week = i.created_at.strftime("%G-W%V")
         weekly_total[week] = weekly_total.get(week, 0) + 1
         if i.is_correct is True:
             weekly_correct[week] = weekly_correct.get(week, 0) + 1
@@ -235,15 +250,9 @@ async def get_my_timeline(
     ]
 
     mastery_records = await bkt_engine.get_mastery(current_user.id, course_id)
-    mastery_curve = [
-        {
-            "node_id": r["node_id"],
-            "name": r["name"],
-            "p_known": round(r["p_known"], 3),
-            "threshold": round(r["threshold"], 3),
-        }
-        for r in mastery_records
-    ]
+    mastery_curve = await _build_mastery_curve(
+        current_user.id, course_id, mastery_records
+    )
 
     return {
         "course_id": course_id,
@@ -252,6 +261,79 @@ async def get_my_timeline(
         "weekly_accuracy": weekly_accuracy,
         "mastery_curve": mastery_curve,
     }
+
+
+async def _build_mastery_curve(
+    user_id: str,
+    course_id: str,
+    mastery_records: list[dict],
+) -> list[dict]:
+    """Return a per-node mastery time-series, falling back to a snapshot.
+
+    The primary path queries MasterySnapshot (written by the BKT engine on
+    every update) so the UI can render an actual learning curve over time.
+    If MasterySnapshot is not available (model not yet defined in db.py, or
+    the underlying table missing) we fall back to the current snapshot from
+    ``bkt_engine.get_mastery`` and emit a single-point history so the API
+    shape stays consistent for the frontend.
+    """
+    if MasterySnapshot is not None:
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(
+                        MasterySnapshot.node_id,
+                        MasterySnapshot.p_known,
+                        MasterySnapshot.created_at,
+                        KnowledgeNode.name,
+                    )
+                    .join(
+                        KnowledgeNode,
+                        KnowledgeNode.id == MasterySnapshot.node_id,
+                    )
+                    .where(
+                        MasterySnapshot.user_id == user_id,
+                        KnowledgeNode.course_id == course_id,
+                    )
+                    .order_by(MasterySnapshot.node_id, MasterySnapshot.created_at)
+                )
+                rows = result.all()
+
+            if rows:
+                grouped: dict[str, dict] = {}
+                for node_id, p_known, created_at, node_name in rows:
+                    bucket = grouped.setdefault(
+                        node_id,
+                        {"node_id": node_id, "node_name": node_name, "history": []},
+                    )
+                    bucket["history"].append(
+                        {
+                            "timestamp": created_at.isoformat() if created_at else None,
+                            "p_known": round(float(p_known), 3) if p_known is not None else 0.0,
+                        }
+                    )
+                return list(grouped.values())
+        except Exception as exc:
+            # Missing table, schema drift, or any other DB error: fall back
+            # to the snapshot so the timeline endpoint still works.
+            logger.warning(
+                "MasterySnapshot query failed, falling back to snapshot: %s", exc
+            )
+
+    # Fallback: one history point per node representing the current p_known.
+    return [
+        {
+            "node_id": r["node_id"],
+            "node_name": r.get("name"),
+            "history": [
+                {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "p_known": round(r["p_known"], 3),
+                }
+            ],
+        }
+        for r in mastery_records
+    ]
 
 
 @router.get("/api/users/me/interactions", response_model=list[InteractionResponse])
@@ -299,3 +381,143 @@ async def list_my_interactions(
         )
         for i in interactions
     ]
+
+
+# Question-type categorization rules. Order matters: the first matching rule
+# wins. Troubleshooting is checked first because an error report containing
+# "why" should still be classified as troubleshooting, not inquiry. The
+# categories align with common pedagogical taxonomies (conceptual /
+# procedural / inquiry / troubleshooting) and the frontend's chart labels.
+_QUESTION_CATEGORIES: list[tuple[str, tuple[str, ...]]] = [
+    ("troubleshooting", ("错误", "报错", "error", "bug", "异常", "失败", "crash")),
+    ("procedural", ("怎么做", "如何", "怎么", "步骤", "how to", "how do", "how does")),
+    ("inquiry", ("为什么", "为何", "原因", "why", "why not", "why does")),
+    ("conceptual", ("是什么", "什么是", "什么意思", "区别", "定义", "what is", "what are", "concept")),
+]
+
+
+def _classify_question(text: str | None) -> str:
+    """Return the question category for a piece of text, or 'other'."""
+    if not text:
+        return "other"
+    lowered = text.lower()
+    for category, keywords in _QUESTION_CATEGORIES:
+        for kw in keywords:
+            if kw in lowered:
+                return category
+    return "other"
+
+
+@router.get("/api/users/me/question-distribution")
+async def get_my_question_distribution(
+    course_id: str | None = Query(None, description="Optional course ID filter"),
+    days: int = Query(30, ge=1, le=365),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Return the distribution of the user's question types.
+
+    Questions are classified by keyword heuristics into conceptual /
+    procedural / inquiry / troubleshooting / other. The response is suitable
+    for a pie/donut chart on the learner dashboard.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    async with AsyncSessionLocal() as session:
+        stmt = (
+            select(Interaction.question_text)
+            .where(
+                Interaction.user_id == current_user.id,
+                Interaction.created_at >= since,
+            )
+        )
+        if course_id:
+            stmt = stmt.where(Interaction.course_id == course_id)
+        result = await session.execute(stmt)
+        question_texts = [row[0] for row in result.all()]
+
+    counts: dict[str, int] = {
+        "conceptual": 0,
+        "procedural": 0,
+        "inquiry": 0,
+        "troubleshooting": 0,
+        "other": 0,
+    }
+    for text in question_texts:
+        counts[_classify_question(text)] += 1
+
+    total = sum(counts.values())
+    distribution = [
+        {
+            "category": category,
+            "count": count,
+            "percentage": round(count / total, 3) if total else 0.0,
+        }
+        for category, count in counts.items()
+    ]
+    return {
+        "total": total,
+        "days": days,
+        "course_id": course_id,
+        "distribution": distribution,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Video progress sync (PRD 2.2 – 时间轴进度与后端同步)
+# ---------------------------------------------------------------------------
+
+@router.put("/api/users/me/videos/{video_id}/progress")
+async def save_video_progress(
+    video_id: str,
+    payload: VideoProgressUpdate,
+    current_user: User = Depends(get_current_active_user),
+):
+    """Upsert the user's playback position for a video.
+
+    Called periodically by the frontend VideoPlayer to support resume-playback
+    and watching-time analytics.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = (
+            pg_insert(VideoProgress)
+            .values(
+                user_id=current_user.id,
+                video_id=video_id,
+                position_seconds=payload.position_seconds,
+                watched_seconds=payload.watched_seconds,
+            )
+            .on_conflict_do_update(
+                index_elements=["user_id", "video_id"],
+                set_={
+                    "position_seconds": payload.position_seconds,
+                    "watched_seconds": payload.watched_seconds,
+                    "last_watched_at": datetime.now(timezone.utc),
+                },
+            )
+        )
+        await session.execute(stmt)
+        await session.commit()
+    return {"status": "ok"}
+
+
+@router.get("/api/users/me/videos/{video_id}/progress")
+async def get_video_progress(
+    video_id: str,
+    current_user: User = Depends(get_current_active_user),
+):
+    """Retrieve the user's last playback position for a video."""
+    async with AsyncSessionLocal() as session:
+        row = await session.execute(
+            select(VideoProgress).where(
+                VideoProgress.user_id == current_user.id,
+                VideoProgress.video_id == video_id,
+            )
+        )
+        progress = row.scalar_one_or_none()
+    if progress is None:
+        return {"position_seconds": 0.0, "watched_seconds": 0.0, "last_watched_at": None}
+    return {
+        "position_seconds": progress.position_seconds,
+        "watched_seconds": progress.watched_seconds,
+        "last_watched_at": progress.last_watched_at.isoformat() if progress.last_watched_at else None,
+    }

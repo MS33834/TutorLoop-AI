@@ -5,15 +5,16 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
-from app.db.neo4j import delete_node, get_graph
+from app.db.neo4j import create_nodes_and_edges, delete_node, get_graph
 from app.db.postgres import AsyncSessionLocal
 from app.limiter import limiter
 from app.models.db import Course, CourseMaterial, KnowledgeEdge, KnowledgeNode, User, Video
@@ -30,7 +31,7 @@ from app.services.class_report_service import generate_class_report
 from app.services.embedding_service import encode_text
 from app.services.kg_extractor import extract_knowledge_graph
 from app.services.video_service import process_video
-from app.tasks.jobs import process_video_task
+from app.tasks.jobs import build_knowledge_graph_task, process_video_task
 
 logger = logging.getLogger(__name__)
 
@@ -290,14 +291,24 @@ def _parse_srt(content: str) -> list[dict]:
         lines = [line.strip() for line in block.splitlines() if line.strip()]
         if len(lines) < 2:
             continue
-        match = time_pattern.search(lines[0]) if re.match(r"\d+", lines[0]) else None
-        if not match and len(lines) >= 2:
-            match = time_pattern.search(lines[1])
+        # A standard SRT block is either:
+        #   [index]
+        #   timecode --> timecode
+        #   text line(s)
+        # or (some encoders omit the index):
+        #   timecode --> timecode
+        #   text line(s)
+        # Detect the index row by checking whether lines[0] is a timecode. If
+        # it is, there is no index row; otherwise lines[0] is the index and
+        # the timecode lives on lines[1].
+        has_index = not bool(time_pattern.search(lines[0]))
+        time_line_idx = 1 if has_index else 0
+        if len(lines) <= time_line_idx:
+            continue
+        match = time_pattern.search(lines[time_line_idx])
         if not match:
             continue
-        text_lines = lines[2:] if re.match(r"\d+", lines[0]) else lines[2:]
-        if not text_lines and len(lines) >= 3:
-            text_lines = lines[2:]
+        text_lines = lines[time_line_idx + 1:]
         start = (
             int(match.group(1)) * 3600
             + int(match.group(2)) * 60
@@ -416,7 +427,7 @@ async def upload_video(
 
     ext = _validate_video_upload(file)
     safe_title = title or (file.filename or "untitled")
-    temp_path = f"/tmp/{uuid4()}{ext}"
+    temp_path = os.path.join(tempfile.gettempdir(), f"{uuid4()}{ext}")
     video_id = str(uuid4())
 
     # Save uploaded bytes to a stable temp path that the worker can read.
@@ -504,7 +515,7 @@ async def upload_course_material(
 
     ext, file_type = _validate_material_upload(file)
     safe_title = title or (file.filename or "untitled")
-    temp_path = f"/tmp/{uuid4()}{ext}"
+    temp_path = os.path.join(tempfile.gettempdir(), f"{uuid4()}{ext}")
     material_id = str(uuid4())
 
     total_size = 0
@@ -659,7 +670,7 @@ async def upload_video_subtitles(
             detail=f"不支持的 MIME 类型: {file.content_type}",
         )
 
-    temp_path = f"/tmp/{uuid4()}{ext}"
+    temp_path = os.path.join(tempfile.gettempdir(), f"{uuid4()}{ext}")
     total_size = 0
     try:
         with open(temp_path, "wb") as f:
@@ -740,6 +751,41 @@ async def build_graph(
             if video_result.scalar_one_or_none() is None:
                 raise HTTPException(status_code=404, detail="课程中未找到该视频")
 
+    # Prefer async extraction via ARQ so the VLM call does not block the
+    # request thread (KG extraction can take minutes for long videos). When
+    # no Redis/task queue is configured we fall back to inline extraction so
+    # the endpoint still works in local-dev / no-worker setups.
+    redis = getattr(request.app.state, "redis", None)
+    if redis is not None:
+        try:
+            await redis.enqueue_job(
+                build_knowledge_graph_task.__name__,
+                course_id,
+                video_id,
+                body.transcript,
+            )
+            return Response(
+                status_code=202,
+                content=json.dumps(
+                    {
+                        "course_id": course_id,
+                        "video_id": video_id,
+                        "status": "queued",
+                        "message": "知识图谱构建任务已入队，请稍后通过图谱接口查看结果。",
+                    },
+                    ensure_ascii=False,
+                ),
+                media_type="application/json",
+            )
+        except Exception as exc:
+            # Enqueue failed (e.g. Redis transient issue): fall through to the
+            # synchronous path so the user is not left without a graph.
+            logger.warning(
+                "Failed to enqueue build_knowledge_graph_task, falling back to sync: %s",
+                exc,
+            )
+
+    # Synchronous fallback when no task queue is configured or enqueue failed.
     graph = await extract_knowledge_graph(course_id, video_id, body.transcript)
     return graph
 
@@ -827,6 +873,27 @@ async def create_knowledge_node(
         session.add(node)
         await session.commit()
         await session.refresh(node)
+
+    # Mirror the new node into Neo4j so the graph DB stays consistent with
+    # Postgres. Failures here are non-fatal: a missing Neo4j node only affects
+    # graph-traversal features, not the canonical Postgres record.
+    try:
+        await create_nodes_and_edges(
+            course_id,
+            [
+                {
+                    "id": node.id,
+                    "name": node.name,
+                    "description": node.description or "",
+                    "threshold": node.threshold,
+                }
+            ],
+            [],
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not sync knowledge node %s to Neo4j: %s", node.id, exc
+        )
 
     return KnowledgeNodeResponse(
         id=node.id,
@@ -997,6 +1064,26 @@ async def create_knowledge_edge(
         except IntegrityError as exc:
             await session.rollback()
             raise HTTPException(status_code=409, detail="该边已存在") from exc
+
+    # Mirror the new edge into Neo4j. Non-fatal on failure: Postgres remains
+    # the source of truth; a missing Neo4j relationship only degrades graph
+    # traversal queries.
+    try:
+        await create_nodes_and_edges(
+            course_id,
+            [],
+            [
+                {
+                    "from": edge.source_id,
+                    "to": edge.target_id,
+                    "relation": edge.relation,
+                }
+            ],
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not sync knowledge edge %s to Neo4j: %s", edge.id, exc
+        )
 
     return KnowledgeEdgeResponse(
         id=edge.id,

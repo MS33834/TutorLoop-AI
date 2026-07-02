@@ -58,17 +58,26 @@ onUnmounted(() => {
 
 watch(() => props.courseId, loadGraph)
 
+// 请求版本号：courseId 快速切换时丢弃旧请求结果，避免旧数据覆盖新图谱（竞态）。
+let loadGraphVersion = 0
+
 async function loadGraph() {
+  const myVersion = ++loadGraphVersion
   loading.value = true
   error.value = ''
   successMsg.value = ''
   try {
-    graph.value = await getCourseGraph(props.courseId)
+    const data = await getCourseGraph(props.courseId)
+    if (myVersion !== loadGraphVersion) return
+    graph.value = data
     initGraph()
   } catch (err) {
+    if (myVersion !== loadGraphVersion) return
     error.value = err.message || '加载图谱失败'
   } finally {
-    loading.value = false
+    if (myVersion === loadGraphVersion) {
+      loading.value = false
+    }
   }
 }
 
@@ -84,7 +93,8 @@ function initGraph() {
   nodes.forEach((node, index) => {
     const el = {
       data: {
-        id: String(node.id ?? index),
+        // 缺少 id 的节点使用 fallback- 前缀避免与真实 id（可能是数字字符串）冲突。
+        id: node.id != null ? String(node.id) : `fallback-${index}`,
         label: node.name || node.label || `节点 ${index + 1}`,
         description: node.description || '',
         threshold: node.threshold ?? 0.8

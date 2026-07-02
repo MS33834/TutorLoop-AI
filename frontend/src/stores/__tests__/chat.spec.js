@@ -6,6 +6,7 @@ import { useUserStore } from '../user.js'
 describe('chat store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.clear()
   })
 
   it('starts with an empty default room', () => {

@@ -24,6 +24,7 @@ const props = defineProps({
 const emit = defineEmits(['node-click'])
 
 const chartError = ref(false)
+const showAll = ref(false)
 
 onErrorCaptured((err) => {
   // eslint-disable-next-line no-console
@@ -35,12 +36,21 @@ onErrorCaptured((err) => {
   return false
 })
 
+// 根据掌握度（0-1）为雷达节点设置颜色：绿=已掌握、橙=学习中、红=未掌握。
+function pointColor(pKnown) {
+  const ratio = typeof pKnown === 'number' && pKnown <= 1 ? pKnown : (pKnown || 0) / 100
+  if (ratio >= 0.8) return '#22c55e' // 绿色 - 已掌握
+  if (ratio >= 0.5) return '#f59e0b' // 橙色 - 学习中
+  return '#ef4444' // 红色 - 未掌握
+}
+
 function itemKey(item, index) {
   return item?.node_id || item?.name || `item-${index}`
 }
 
-const displayItems = computed(() => {
-  const list = (props.items || [])
+// 全量（已归一化、过滤）列表，供"显示全部"时使用。
+const allItems = computed(() => {
+  return (props.items || [])
     .filter((item) => item && typeof item === 'object')
     .map((item, index) => ({
       ...item,
@@ -49,8 +59,12 @@ const displayItems = computed(() => {
       thresholdPercent: normalizePercent(item.threshold ?? item.thresholdPercent)
     }))
     .filter((item) => item.name)
+})
 
-  if (list.length <= 8) return list
+const displayItems = computed(() => {
+  const list = allItems.value
+
+  if (list.length <= 8 || showAll.value) return list
 
   // 按紧迫度排序：未掌握且差距大的优先，然后其他
   const urgent = list
@@ -63,6 +77,8 @@ const displayItems = computed(() => {
   return urgent.concat(rest).slice(0, 8)
 })
 
+const hasMore = computed(() => allItems.value.length > 8)
+
 const chartData = computed(() => {
   return {
     labels: displayItems.value.map((i) => i.name),
@@ -72,10 +88,12 @@ const chartData = computed(() => {
         data: displayItems.value.map((i) => i.pKnownPercent),
         backgroundColor: 'rgba(37, 99, 235, 0.2)',
         borderColor: '#2563eb',
-        pointBackgroundColor: '#2563eb',
+        // 节点按掌握度着色：绿(已掌握)/橙(学习中)/红(未掌握)
+        pointBackgroundColor: displayItems.value.map((i) => pointColor(i.p_known ?? i.pKnownPercent / 100)),
         pointBorderColor: '#ffffff',
         pointHoverBackgroundColor: '#ffffff',
         pointHoverBorderColor: '#2563eb',
+        pointRadius: displayItems.value.length > 12 ? 3 : 4,
         borderWidth: 2
       },
       {
@@ -142,7 +160,17 @@ const chartOptions = computed(() => ({
 
 <template>
   <div class="mastery-radar">
-    <h3 class="title">掌握度雷达</h3>
+    <div class="radar-header">
+      <h3 class="title">掌握度雷达</h3>
+      <button
+        v-if="hasMore"
+        class="toggle-btn"
+        type="button"
+        @click="showAll = !showAll"
+      >
+        {{ showAll ? '收起' : '显示全部' }}
+      </button>
+    </div>
 
     <div v-if="!displayItems.length" class="fallback">
       <p>还没有掌握度数据，多提问几次就能看到你的进步曲线</p>
@@ -179,11 +207,33 @@ const chartOptions = computed(() => ({
   padding: 0.75rem;
 }
 
+.radar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
 .title {
-  margin: 0 0 0.5rem;
+  margin: 0;
   font-size: 0.9375rem;
   font-weight: 600;
   color: #111827;
+}
+
+.toggle-btn {
+  padding: 0.25rem 0.625rem;
+  border: 1px solid #2563eb;
+  border-radius: 9999px;
+  background: #ffffff;
+  color: #2563eb;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.toggle-btn:hover {
+  background: #eff6ff;
 }
 
 .chart-wrapper {

@@ -1,5 +1,6 @@
 """Knowledge graph extraction service."""
 
+import asyncio
 import base64
 import json
 import logging
@@ -7,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -33,8 +35,10 @@ logger = logging.getLogger(__name__)
 
 
 SAMPLE_FRAME_COUNT = 8
-MAX_CAPTION_TOKENS = 256
-MAX_KG_TOKENS = 4096
+# Token caps are configurable via settings (with sensible defaults) so they can
+# be tuned per deployment without code changes.
+MAX_CAPTION_TOKENS = getattr(settings, "max_caption_tokens", 256)
+MAX_KG_TOKENS = getattr(settings, "max_kg_tokens", 4096)
 
 # Shared VLM provider singleton. Previously _caption_frame and _call_vlm each
 # constructed a fresh OpenAICompatibleProvider (and thus a fresh httpx client
@@ -207,16 +211,22 @@ async def _caption_frames(
     frame_paths: list[str],
     transcript: str | None,
 ) -> list[str]:
-    """Caption sampled frames, logging but swallowing per-frame errors."""
-    captions: list[str] = []
-    for path in frame_paths:
+    """Caption sampled frames concurrently, logging but swallowing per-frame errors.
+
+    Frames are captioned in parallel via ``asyncio.gather`` (one VLM call per
+    frame) instead of sequentially, which roughly cuts wall-clock time by the
+    number of sampled frames for I/O-bound VLM endpoints. Results are returned
+    in the same order as ``frame_paths``.
+    """
+
+    async def _safe_caption(path: str) -> str:
         try:
-            caption = await _caption_frame(course, path, transcript)
+            return await _caption_frame(course, path, transcript)
         except Exception as exc:
             logger.warning("Captioning failed for frame %s after retries: %s", path, exc)
-            caption = "无法识别"
-        captions.append(caption)
-    return captions
+            return "无法识别"
+
+    return await asyncio.gather(*[_safe_caption(p) for p in frame_paths])
 
 
 async def _persist_frame_captions(
@@ -630,9 +640,10 @@ async def extract_knowledge_graph(
             if existing is not None:
                 # Update the existing node in place instead of creating a
                 # duplicate (which would violate the unique constraint).
+                # Preserve the original neo4j_id on re-run rather than
+                # overwriting it with the (possibly different) LLM-assigned id.
                 existing.description = description
                 existing.threshold = threshold
-                existing.neo4j_id = node_id
                 existing.embedding = embedding
                 db_nodes.append(existing)
             else:
@@ -648,17 +659,20 @@ async def extract_knowledge_graph(
                 db_nodes.append(db_node)
 
         # Flush to populate generated primary keys before commit so we can
-        # build the neo4j_id -> db_id mapping without a second query.
+        # build the LLM node_id -> db_id mapping without a second query.
         await session.flush()
-        for db_node in db_nodes:
-            if db_node.neo4j_id:
-                node_id_map[db_node.neo4j_id] = db_node.id
+        # Map the LLM-assigned id from THIS run to the db primary key so edges
+        # resolve correctly even when existing nodes kept a previous neo4j_id.
+        for llm_node, db_node in zip(nodes, db_nodes, strict=False):
+            llm_id = llm_node.get("id")
+            if llm_id and db_node.id:
+                node_id_map[llm_id] = db_node.id
         await session.commit()
 
-    # Persist edges to Postgres using the neo4j_id mapping.
+    # Persist edges to Postgres using the node_id mapping.
     async with AsyncSessionLocal() as session:
-        # If flush did not capture every node (e.g. empty neo4j_id), re-query
-        # to ensure the mapping is complete.
+        # If the mapping is still empty (e.g. no nodes extracted), re-query by
+        # neo4j_id as a last-resort fallback.
         if not node_id_map:
             result = await session.execute(
                 select(KnowledgeNode).where(KnowledgeNode.course_id == course_id)
@@ -672,14 +686,25 @@ async def extract_knowledge_graph(
             target = edge.get("to")
             relation = edge.get("relation") or "prerequisite"
             if source in node_id_map and target in node_id_map:
-                session.add(
-                    KnowledgeEdge(
-                        course_id=course_id,
-                        source_id=node_id_map[source],
-                        target_id=node_id_map[target],
-                        relation=relation,
+                # Use a savepoint per edge so a duplicate (violating
+                # uq_knowledge_edge) is skipped without aborting the whole
+                # batch. Postgres remains the source of truth; Neo4j sync
+                # failures below only log a warning.
+                try:
+                    async with session.begin_nested():
+                        session.add(
+                            KnowledgeEdge(
+                                course_id=course_id,
+                                source_id=node_id_map[source],
+                                target_id=node_id_map[target],
+                                relation=relation,
+                            )
+                        )
+                except IntegrityError:
+                    logger.debug(
+                        "Skipping duplicate edge %s -> %s (%s)", source, target, relation
                     )
-                )
+                    continue
         await session.commit()
 
     # Persist to Neo4j

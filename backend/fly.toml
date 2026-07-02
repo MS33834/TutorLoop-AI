@@ -4,12 +4,29 @@ primary_region = 'hkg'
 [build]
   dockerfile = 'Dockerfile'
 
+# Required secrets (set with `flyctl secrets set`):
+#   DATABASE_URL     - postgresql+asyncpg://... (e.g. from Fly Postgres)
+#   NEO4J_URI        - bolt://...
+#   NEO4J_USER
+#   NEO4J_PASSWORD
+#   REDIS_URL        - redis://... (e.g. from Upstash)
+#   SECRET_KEY       - >= 32 chars, identical on app + worker
+#   LLM_API_KEYS     - comma-separated, same length as the two below
+#   LLM_BASE_URLS
+#   LLM_MODELS
+#   CORS_ORIGINS     - comma-separated allowed frontend origins
+# Optional secrets: SENTRY_DSN, VLM_BASE_URL, VLM_API_KEY
+
 [http_service]
   internal_port = 8000
   force_https = true
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  # Keep at least one machine running so the worker process group (which runs
+  # periodic cron jobs: AI key health probes every 30s, screenshot cleanup) is
+  # never scaled to zero. Stopping the worker would silently break the cron
+  # schedule and let key health go stale.
+  min_machines_running = 1
   processes = ['app']
 
 [[vm]]

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -177,6 +177,9 @@ class Mastery(Base):
     )
     p_known: Mapped[float] = mapped_column(Float, default=0.3)
     p_t: Mapped[float] = mapped_column(Float, default=0.3)
+    p_g: Mapped[float] = mapped_column(Float, default=0.2)
+    p_s: Mapped[float] = mapped_column(Float, default=0.1)
+    p_l0: Mapped[float] = mapped_column(Float, default=0.1)
     interactions_count: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(default=now_utc)
 
@@ -297,3 +300,56 @@ class CourseMaterial(Base):
     created_at: Mapped[datetime] = mapped_column(default=now_utc)
 
     course: Mapped["Course"] = relationship(back_populates="materials")
+
+
+class MasterySnapshot(Base):
+    """Append-only mastery history for time-series mastery curves."""
+
+    __tablename__ = "mastery_snapshots"
+
+    __table_args__ = (
+        Index("ix_mastery_snapshots_user_node", "user_id", "node_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    node_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_nodes.id", ondelete="CASCADE"), nullable=False
+    )
+    course_id: Mapped[str] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
+    )
+    p_known: Mapped[float] = mapped_column(Float, nullable=False)
+    p_t: Mapped[float] = mapped_column(Float, nullable=False, default=0.1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class VideoProgress(Base):
+    """Per-user video watch progress (position + cumulative watched seconds)."""
+
+    __tablename__ = "video_progress"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "video_id", name="uq_video_progress_user_video"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    video_id: Mapped[str] = mapped_column(
+        ForeignKey("videos.id", ondelete="CASCADE"), nullable=False
+    )
+    position_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    watched_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    last_watched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

@@ -155,8 +155,11 @@ def test_is_retryable_provider_error_none_status():
 
 
 def test_is_retryable_auth_error():
+    # A 401 is now retryable: a single rejected key should not abort the
+    # request when other keys in the pool may still be valid. The caller
+    # caps retries via the per-request key loop, so this cannot loop forever.
     exc = AuthenticationError()
-    assert _is_retryable(exc) is False
+    assert _is_retryable(exc) is True
 
 
 def test_is_retryable_balance_error():

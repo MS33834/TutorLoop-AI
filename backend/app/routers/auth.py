@@ -36,19 +36,26 @@ REFRESH_COOKIE_NAME = "tutorloop_refresh"
 REFRESH_COOKIE_MAX_AGE = 30 * 24 * 3600  # 30 days, matches REFRESH_TOKEN_EXPIRE_DAYS
 
 
-def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
+def _set_refresh_cookie(response: Response, refresh_token: str, request: Request) -> None:
     """Attach the refresh token as a hardened HttpOnly cookie.
 
     secure is driven by the request scheme so local dev over HTTP still works
-    while production HTTPS gets the Secure flag.
+    while production HTTPS gets the Secure flag. When ``settings.cookie_secure``
+    is explicitly True, the Secure flag is forced on regardless of scheme
+    (useful when TLS is terminated upstream and the app only sees HTTP).
     """
+    is_https = (
+        request.url.scheme == "https"
+        or request.headers.get("x-forwarded-proto") == "https"
+    )
+    secure = bool(settings.cookie_secure) or is_https
     response.set_cookie(
         key=REFRESH_COOKIE_NAME,
         value=refresh_token,
         max_age=REFRESH_COOKIE_MAX_AGE,
         httponly=True,
         samesite="strict",
-        secure=False,  # set per-request below when behind HTTPS
+        secure=secure,
         path="/api/auth",
     )
 
@@ -116,7 +123,7 @@ async def register(request: Request, body: UserRegister, response: Response):
     # Store the refresh token in an HttpOnly cookie so it is not exposed to JS
     # (mitigating XSS token theft). The access token stays in the response body
     # for the client to hold in memory only.
-    _set_refresh_cookie(response, token_pair.refresh_token)
+    _set_refresh_cookie(response, token_pair.refresh_token, request)
     return token_pair
 
 
@@ -143,7 +150,7 @@ async def login(request: Request, body: UserLogin, response: Response):
         )
 
     token_pair = _issue_token_pair(user)
-    _set_refresh_cookie(response, token_pair.refresh_token)
+    _set_refresh_cookie(response, token_pair.refresh_token, request)
     return token_pair
 
 
@@ -190,7 +197,7 @@ async def refresh_token(
     new_access = create_access_token({"sub": user.id}, expires_delta=expires)
     new_refresh = create_refresh_token({"sub": user.id})
     # Rotate the refresh cookie with the new token.
-    _set_refresh_cookie(response, new_refresh)
+    _set_refresh_cookie(response, new_refresh, request)
     return RefreshTokenResponse(access_token=new_access, refresh_token=new_refresh)
 
 

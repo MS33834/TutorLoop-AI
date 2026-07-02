@@ -130,6 +130,7 @@ export const useUserStore = defineStore('user', () => {
   }
 
   async function fetchProfile() {
+    // 无 token 时直接短路返回，避免无谓的 401 请求。
     if (!token.value) return
     // If the access token is expired, try to refresh silently via the cookie.
     if (isTokenExpired(token.value)) {
@@ -153,16 +154,6 @@ export const useUserStore = defineStore('user', () => {
       if (err.code === 'UNAUTHORIZED' || err.code === 'HTTP_403') {
         clearAuth()
       }
-    }
-  }
-
-  // Restore legacy user_id if present, then migrate to new auth
-  const legacyId = localStorage.getItem('tutorloop_user_id')
-  if (legacyId && !isLoggedIn.value) {
-    try {
-      localStorage.removeItem('tutorloop_user_id')
-    } catch {
-      // ignore
     }
   }
 

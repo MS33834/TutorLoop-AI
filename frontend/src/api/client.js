@@ -137,7 +137,7 @@ async function _apiFetchWithRetry(url, options, userStore, timeoutMs) {
   let lastErr = null
   // Whether we've already attempted a token refresh for this request.
   // We only refresh once to avoid infinite loops.
-  let refreshed = false
+  let refreshUsed = false
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     // Read the latest token from the store on each attempt so that a
@@ -153,12 +153,15 @@ async function _apiFetchWithRetry(url, options, userStore, timeoutMs) {
       // instead of logging the user out. The refresh token is sent
       // automatically via the HttpOnly cookie (credentials: 'include').
       if (err.code === 'UNAUTHORIZED') {
-        if (!refreshed) {
-          refreshed = true
+        if (!refreshUsed) {
+          // Mark refresh as used so we never loop. The retry occupies one
+          // attempt slot (no attempt rollback) so total attempts stay
+          // bounded by MAX_RETRIES instead of growing to MAX_RETRIES + 2.
+          refreshUsed = true
           const newToken = await userStore.refreshAccessToken()
           if (newToken) {
-            // Retry immediately without counting against MAX_RETRIES.
-            attempt -= 1
+            // Retry immediately with the refreshed token. Do NOT rewind
+            // attempt — the refresh retry counts against MAX_RETRIES.
             continue
           }
           // Refresh failed — clear auth and surface the error.

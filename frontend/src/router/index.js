@@ -9,10 +9,18 @@ const GraphView = () => import('../views/GraphView.vue')
 const ReportView = () => import('../views/ReportView.vue')
 const TeacherDashboard = () => import('../views/TeacherDashboard.vue')
 const ClassReportView = () => import('../views/ClassReportView.vue')
+const ForbiddenView = () => import('../views/ForbiddenView.vue')
 
 const routes = [
   { path: '/', name: 'home', component: HomeView },
   { path: '/login', name: 'login', component: LoginView },
+  {
+    // 示例报告：无需登录即可预览，必须放在 /report/:courseId 之前以免被参数路由吞掉。
+    path: '/report/demo',
+    name: 'report-demo',
+    component: ReportView,
+    props: { courseId: 'demo' }
+  },
   {
     path: '/room/:slug',
     name: 'room',
@@ -53,6 +61,11 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/forbidden',
+    name: 'forbidden',
+    component: ForbiddenView
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('../views/NotFoundView.vue')
@@ -73,9 +86,15 @@ router.beforeEach((to, from, next) => {
     return
   }
 
-  // Teacher/admin-only routes: students get redirected to home.
+  // Teacher/admin-only routes: anonymous users go to login; logged-in
+  // students/parents land on a dedicated 403 page instead of a silent
+  // redirect home (so they understand it's a permission issue, not a bug).
   if (to.meta.requiresTeacher && !userStore.isTeacher) {
-    next({ name: 'home' })
+    if (!userStore.isLoggedIn) {
+      next({ name: 'login', query: { redirect: to.fullPath } })
+    } else {
+      next({ name: 'forbidden' })
+    }
     return
   }
 

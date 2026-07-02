@@ -1,12 +1,12 @@
 """Video frame extraction and persistence service."""
 
 import logging
-import os
+import shutil
 import uuid
 from pathlib import Path
 
 import cv2
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.config import settings
 from app.db.postgres import AsyncSessionLocal
@@ -24,52 +24,6 @@ def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def extract_frames(
-    video_path: str, interval_seconds: int | None = None
-) -> tuple[list[dict], float]:
-    """Extract JPG frames from a video at fixed intervals.
-
-    Returns (list of dicts with timestamp_seconds and frame image, video duration).
-
-    .. note::
-        For memory efficiency prefer :func:`extract_and_save_frames` which writes
-        each frame to disk immediately instead of accumulating them in memory.
-    """
-    interval = interval_seconds or settings.frame_interval_seconds
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        logger.error("Cannot open video: %s", video_path)
-        return [], 0.0
-
-    try:
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = total_frames / fps if fps > 0 else 0.0
-
-        frames = []
-        frame_interval = int(fps * interval)
-        frame_index = 0
-
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            if frame_index % frame_interval == 0:
-                timestamp_seconds = round(frame_index / fps, 2)
-                frames.append({"timestamp_seconds": timestamp_seconds, "frame": frame})
-
-            frame_index += 1
-
-        # Sort by timestamp so directory listing is deterministic
-        frames.sort(key=lambda x: x["timestamp_seconds"])
-        return frames, duration
-    finally:
-        # Always release the VideoCapture, even if read() raises, so the
-        # underlying file descriptor / camera handle is not leaked.
-        cap.release()
-
-
 def extract_and_save_frames(
     video_path: str,
     target_dir: Path,
@@ -77,9 +31,9 @@ def extract_and_save_frames(
 ) -> tuple[list[dict], float]:
     """Extract frames and write each to disk immediately.
 
-    Unlike :func:`extract_frames`, this holds at most one decoded frame in
-    memory at a time, avoiding OOM on long videos. Returns a list of dicts
-    with ``timestamp_seconds`` and ``file_path`` keys, plus the video duration.
+    Holds at most one decoded frame in memory at a time, avoiding OOM on long
+    videos. Returns a list of dicts with ``timestamp_seconds`` and
+    ``file_path`` keys, plus the video duration.
     """
     interval = interval_seconds or settings.frame_interval_seconds
     cap = cv2.VideoCapture(video_path)
@@ -142,7 +96,10 @@ async def process_video(
     ext = source_path_obj.suffix or ".mp4"
     target_video = Path(settings.upload_dir) / "videos" / f"{video_id}{ext}"
     _ensure_dir(target_video.parent)
-    os.replace(source_path, str(target_video))
+    # shutil.move works across filesystems (falling back to copy+delete),
+    # unlike os.replace which fails with EXDEV when the temp upload and the
+    # upload dir live on different mounts.
+    shutil.move(source_path, str(target_video))
 
     raw_frames, duration = extract_and_save_frames(str(target_video), target_dir)
 
@@ -151,11 +108,12 @@ async def process_video(
         timestamp = item["timestamp_seconds"]
         file_path = item["file_path"]
 
-        # Use a meaningful placeholder caption that includes the video title
-        # and timestamp. This is overwritten by VLM-generated captions during
-        # knowledge graph extraction, but until then it provides enough
-        # textual signal for embedding-based retrieval to work reasonably.
-        caption = f"{title} - {timestamp}s"
+        # Placeholder caption used until VLM captions are generated during KG
+        # extraction. Includes the video title, timestamp and a short
+        # descriptor so embedding-based retrieval has meaningful text to work
+        # with. The "[placeholder]" prefix lets RAG/recommendation detect and
+        # downgrade these captions when real VLM captions are available.
+        caption = f"[placeholder] {title} 视频关键帧（{timestamp}秒）"
         frame = VideoFrame(
             video_id=video_id,
             timestamp_seconds=timestamp,
@@ -191,16 +149,3 @@ async def process_video(
         "Processed video %s: %d frames, %.2f seconds", video_id, len(db_frames), duration
     )
     return video_id, db_frames
-
-
-async def get_frame_path(video_id: str, timestamp_seconds: float) -> str | None:
-    """Return the frame file path nearest to the requested timestamp."""
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(VideoFrame)
-            .where(VideoFrame.video_id == video_id)
-            .order_by(func.abs(VideoFrame.timestamp_seconds - timestamp_seconds))
-            .limit(1)
-        )
-        frame = result.scalar_one_or_none()
-        return frame.file_path if frame else None

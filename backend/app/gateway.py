@@ -88,20 +88,34 @@ class KeyPool:
         Weight = (remaining_quota / avg_rtt_ms) * success_rate^2.
         Quota favours keys with more budget, RTT favours fast keys, and the
         squared success rate aggressively penalises recently failing keys.
+
+        Keys whose ``remaining_quota`` has dropped to zero or below are
+        filtered out before selection so an exhausted key is never picked
+        over keys that still have budget. (Previously the weight used
+        ``max(1.0, remaining_quota)``, which bumped an exhausted key up to a
+        weight of 1.0 — making it *more* likely to be selected than a key
+        with 0.5 quota, the opposite of the intended behaviour.)
         """
         exclude = exclude or set()
-        healthy = [k for k in self._healthy_keys(model_type) if id(k) not in exclude]
+        healthy = [
+            k
+            for k in self._healthy_keys(model_type)
+            if id(k) not in exclude and k.remaining_quota > 0
+        ]
         if not healthy:
             return None
         weights = []
         for k in healthy:
-            quota_factor = max(1.0, k.remaining_quota)
+            # Tiny floor so a key with quota in (0, 1) (e.g. fractional reset)
+            # still gets a non-zero weight rather than being silently dropped
+            # by the > 0 filter above only to get a 0 weight here.
+            quota_factor = max(0.01, float(k.remaining_quota))
             rtt_factor = max(1.0, k.avg_rtt_ms)
             success_factor = self._success_rate(k) ** 2
             weights.append(quota_factor / rtt_factor * success_factor)
 
         total = sum(weights)
-        if total <= 0:
+        if total <= 0:  # defensive fallback
             return random.choice(healthy)
         pick = random.uniform(0, total)
         current = 0.0
@@ -210,14 +224,21 @@ class GatewayError(Exception):
 
 
 def _is_retryable(exc: BaseException | None) -> bool:
-    """Return True if the exception warrants trying another cloud key."""
+    """Return True if the exception warrants trying another cloud key.
+
+    A 401 (AuthenticationError) is retryable: a single rejected key should
+    not abort the whole request when other keys in the pool may still be
+    valid. The caller caps retries via the per-request key loop in
+    ``stream_chat`` / ``chat_completion`` (one attempt per available key), so
+    this cannot cause unbounded retry.
+    """
     if exc is None:
         return False
     if isinstance(exc, RateLimitError):
         return True
     if isinstance(exc, ProviderError):
         status = getattr(exc, "status_code", None)
-        if status in {429, 502, 503, 504, None}:
+        if status in {401, 429, 502, 503, 504, None}:
             return True
     return False
 
@@ -256,6 +277,7 @@ async def _try_cloud(
     messages: list[dict[str, Any]],
     model_type: str,
 ) -> AsyncIterator[dict[str, Any]]:
+    start = time.perf_counter()
     try:
         async for chunk in _stream_with_first_token_timeout(
             key_info.provider,
@@ -263,7 +285,12 @@ async def _try_cloud(
             messages,
         ):
             yield chunk
-        pool.mark_healthy(key_info)
+        # Pass the measured RTT (time-to-completion for the stream) so the
+        # weighted selector keeps accurate latency data. Previously the
+        # success path did not pass rtt_ms, leaving avg_rtt_ms stuck at the
+        # initial 100ms even for fast keys.
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        pool.mark_healthy(key_info, rtt_ms=elapsed_ms)
     except GatewayError as exc:
         pool.mark_degraded(key_info, reason=str(exc))
         raise
@@ -344,7 +371,7 @@ async def chat_completion(
             # latency data for degraded keys.
             elapsed_ms = (time.perf_counter() - start) * 1000
             pool.mark_degraded(key_info, reason=str(exc))
-            # mark_degraded resets error_count tracking but doesn't update RTT;
+            # mark_degraded increments error_count but doesn't update RTT;
             # update avg_rtt_ms directly for degraded keys.
             if elapsed_ms > 0:
                 key_info.avg_rtt_ms = (

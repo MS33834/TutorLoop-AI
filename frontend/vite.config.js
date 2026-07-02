@@ -8,26 +8,56 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {
-        name: 'TutorLoop-AI',
+        name: 'TutorLoop AI',
         short_name: 'TutorLoop',
+        description: 'AI 驱动的自适应学习平台',
         start_url: '/',
-        display: 'standalone',
-        theme_color: '#ffffff',
+        theme_color: '#2563eb',
         background_color: '#ffffff',
+        display: 'standalone',
+        orientation: 'portrait-primary',
+        lang: 'zh-CN',
         icons: [
+          { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+          { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+        ],
+      },
+      workbox: {
+        runtimeCaching: [
           {
-            src: '/icon.svg',
-            sizes: '512x512',
-            type: 'image/svg+xml',
-            purpose: 'any maskable'
-          }
-        ]
-      }
+            urlPattern: /^https?:\/\/.*\/api\//,
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'api-cache',
+              networkTimeoutSeconds: 10,
+              expiration: { maxEntries: 100, maxAgeSeconds: 3600 },
+            },
+          },
+          {
+            urlPattern: /\.(?:mp4|webm|jpg|jpeg|png|gif|svg|webp)$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'media-cache',
+              expiration: { maxEntries: 50, maxAgeSeconds: 86400 },
+            },
+          },
+        ],
+      },
     })
   ],
   server: {
     port: 5173,
-    host: true
+    host: true,
+    proxy: {
+      // Proxy /api requests to the backend during development so the SPA can
+      // use a same-origin relative base URL and avoid CORS preflights locally.
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+    },
   },
   build: {
     rollupOptions: {

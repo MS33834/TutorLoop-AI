@@ -1,13 +1,15 @@
 # TutorLoop-AI Backend
 
-Phase 1 最小可用的 FastAPI AI Gateway，包含多 Key 路由池、SSE 流式聊天接口与健康检查。
+FastAPI 后端，提供多 Key 路由池 AI 网关、SSE 流式聊天、视频/图片/PDF 上传与多模态 RAG、
+Neo4j 知识图谱构建、BKT 掌握度引擎与自适应路径推荐，以及 JWT 认证、课程/学习房间管理
+等完整能力（Phase 1-3 功能已全部完成）。
 
 ## 快速开始
 
 1. 复制环境变量示例并填写真实 API Key：
 
 ```bash
-cp .env.example .env
+cp env.example .env
 # 编辑 .env，将 LLM_API_KEYS 替换为你的真实 key
 ```
 
@@ -21,6 +23,19 @@ pip install -r requirements.txt
 
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+## 测试
+
+```bash
+# 安装开发依赖
+pip install -r requirements-dev.txt
+
+# 运行单元测试
+pytest -q
+
+# 运行测试并收集覆盖率（与 CI 一致）
+pytest --cov=app --cov-report=term-missing -q
 ```
 
 ## Docker 运行

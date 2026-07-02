@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, onBeforeUnmount, ref } from 'vue'
 import { RouterLink, RouterView, useRouter } from 'vue-router'
 import { useUserStore } from './stores/user.js'
 import ErrorBoundary from './components/ErrorBoundary.vue'
@@ -9,16 +9,35 @@ const userStore = useUserStore()
 const mobileMenuOpen = ref(false)
 const isOnline = ref(navigator.onLine)
 
+function handleOnline() {
+  isOnline.value = true
+}
+function handleOffline() {
+  isOnline.value = false
+}
+
 onMounted(() => {
-  userStore.fetchProfile()
-  window.addEventListener('online', () => { isOnline.value = true })
-  window.addEventListener('offline', () => { isOnline.value = false })
+  // 仅在已登录时拉取个人资料，避免无 token 时发起无谓的 401 请求。
+  if (userStore.isLoggedIn) {
+    userStore.fetchProfile()
+  }
+  window.addEventListener('online', handleOnline)
+  window.addEventListener('offline', handleOffline)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('online', handleOnline)
+  window.removeEventListener('offline', handleOffline)
 })
 
 async function logout() {
-  await userStore.logout()
-  mobileMenuOpen.value = false
-  router.push('/')
+  // 无论后端登出是否成功，都要关闭菜单并回到首页，避免用户卡在已登出但 UI 未刷新的状态。
+  try {
+    await userStore.logout()
+  } finally {
+    mobileMenuOpen.value = false
+    router.push('/')
+  }
 }
 
 function closeMobileMenu() {
@@ -57,8 +76,8 @@ function closeMobileMenu() {
       <button
         class="menu-toggle"
         type="button"
-        aria-label="打开导航菜单"
-        aria-expanded="false"
+        :aria-label="mobileMenuOpen ? '关闭导航菜单' : '打开导航菜单'"
+        :aria-expanded="mobileMenuOpen ? 'true' : 'false'"
         aria-controls="mobile-nav"
         @click="mobileMenuOpen = !mobileMenuOpen"
       >

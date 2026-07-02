@@ -4,20 +4,21 @@ import { useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user.js'
 import { apiFetch } from '../api/client.js'
 import MasteryRadar from '../components/MasteryRadar.vue'
-import { Line } from 'vue-chartjs'
+import { Line, Pie } from 'vue-chartjs'
 import {
   Chart as ChartJS,
   CategoryScale,
   LinearScale,
   PointElement,
   LineElement,
+  ArcElement,
   Title,
   Tooltip,
   Legend
 } from 'chart.js'
 import { normalizePercent, formatPercent, formatDate, formatShortDate } from '../utils/format.js'
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ArcElement, Title, Tooltip, Legend)
 
 const props = defineProps({
   courseId: { type: String, required: true }
@@ -107,9 +108,22 @@ const nextActions = computed(() => {
   return actions.slice(0, 4)
 })
 
-function goToRoom() {
-  if (report.value?.course_id) {
-    router.push(`/room/${report.value.course_id}`)
+async function goToRoom() {
+  // course_id 不是 room slug，需要先查询该课程对应的房间再跳转。
+  const courseId = report.value?.course_id
+  if (!courseId) return
+  try {
+    const rooms = await apiFetch(`/api/courses/${encodeURIComponent(courseId)}/rooms`)
+    const slug = Array.isArray(rooms) && rooms.length ? rooms[0].slug : null
+    if (slug) {
+      router.push(`/room/${slug}`)
+    } else {
+      // 该课程暂无房间，回到首页让学生通过房间号进入。
+      router.push('/')
+    }
+  } catch {
+    // 查询房间失败，降级跳转首页。
+    router.push('/')
   }
 }
 
@@ -122,6 +136,57 @@ const heatmapMax = computed(() => {
   if (!heatmapData.value.length) return 1
   return Math.max(1, ...heatmapData.value.map((d) => d.count || 0))
 })
+
+// PRD 要求"视频时间轴上的停留与回看分布"。若后端 timeline 返回 video_heatmap
+// 则展示该区域；否则仅保留日历热力图（学习活跃度），视频时间轴热力图待后端支持。
+const videoHeatmap = computed(() => {
+  const data = timeline.value?.video_heatmap
+  if (!Array.isArray(data) || !data.length) return []
+  return data
+})
+
+const videoHeatmapMax = computed(() => {
+  if (!videoHeatmap.value.length) return 1
+  return Math.max(1, ...videoHeatmap.value.map((d) => d.count || d.value || 0))
+})
+
+function videoHeatmapColor(count) {
+  const ratio = Math.min(count / videoHeatmapMax.value, 1)
+  const alpha = 0.15 + ratio * 0.85
+  return `rgba(245, 158, 11, ${alpha})`
+}
+
+// 提问类型分布：若后端返回 question_distribution 则用饼图展示。
+const questionDistributionData = computed(() => {
+  const dist = report.value?.question_distribution
+  if (!Array.isArray(dist) || !dist.length) return null
+  return {
+    labels: dist.map((d) => d.label || d.type || d.name),
+    datasets: [
+      {
+        data: dist.map((d) => d.count ?? d.value ?? 0),
+        backgroundColor: [
+          '#2563eb',
+          '#7c3aed',
+          '#f59e0b',
+          '#10b981',
+          '#ef4444',
+          '#06b6d4',
+          '#ec4899'
+        ],
+        borderWidth: 1
+      }
+    ]
+  }
+})
+
+const questionDistributionOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 12 } } }
+  }
+}
 
 function heatmapColor(count) {
   const ratio = Math.min(count / heatmapMax.value, 1)
@@ -167,11 +232,11 @@ const masteryChartOptions = {
   }
 }
 
-const CACHE_KEY = (courseId, userId) => `tutorloop-report-${userId || 'anon'}-${courseId}`
+const buildCacheKey = (courseId, userId) => `tutorloop-report-${userId || 'anon'}-${courseId}`
 
 function cacheReport(data) {
   try {
-    localStorage.setItem(CACHE_KEY(props.courseId, user.userId), JSON.stringify({
+    localStorage.setItem(buildCacheKey(props.courseId, user.userId), JSON.stringify({
       savedAt: new Date().toISOString(),
       data
     }))
@@ -182,7 +247,7 @@ function cacheReport(data) {
 
 function loadCachedReport() {
   try {
-    const raw = localStorage.getItem(CACHE_KEY(props.courseId, user.userId))
+    const raw = localStorage.getItem(buildCacheKey(props.courseId, user.userId))
     if (!raw) return null
     const parsed = JSON.parse(raw)
     return parsed.data || null
@@ -191,7 +256,71 @@ function loadCachedReport() {
   }
 }
 
+// 请求版本号：防止 courseId 快速切换时旧请求覆盖新请求的结果（竞态）。
+let loadReportVersion = 0
+
+// 示例报告（/report/demo）：未登录用户也可预览报告样式，使用静态示例数据，
+// 避免向后端发送带身份的请求。
+function loadDemoReport() {
+  report.value = {
+    course_id: 'demo',
+    course_title: '示例学习报告',
+    generated_at: new Date().toISOString(),
+    summary: {
+      average_mastery: 0.62,
+      mastered_nodes: 4,
+      total_nodes: 8,
+      accuracy: 0.71,
+      total_watch_minutes: 86,
+      interaction_count: 53,
+      recent_7d_interactions: 12,
+      total_help_count: 6,
+      mastery_rate: 0.5
+    },
+    mastery_items: [
+      { node_id: 'd1', name: '二元一次方程', p_known: 0.85, threshold: 0.8 },
+      { node_id: 'd2', name: '代入消元法', p_known: 0.72, threshold: 0.8 },
+      { node_id: 'd3', name: '加减消元法', p_known: 0.64, threshold: 0.8 },
+      { node_id: 'd4', name: '应用题建模', p_known: 0.41, threshold: 0.8 },
+      { node_id: 'd5', name: '图像法求解', p_known: 0.55, threshold: 0.8 },
+      { node_id: 'd6', name: '方程组解的情况', p_known: 0.33, threshold: 0.8 }
+    ],
+    weak_nodes: [
+      { node_id: 'd4', name: '应用题建模', gap: 0.39 },
+      { node_id: 'd6', name: '方程组解的情况', gap: 0.47 },
+      { node_id: 'd5', name: '图像法求解', gap: 0.25 }
+    ],
+    question_distribution: [
+      { label: '概念理解', count: 18 },
+      { label: '解题求助', count: 12 },
+      { label: '错题回顾', count: 9 },
+      { label: '截图提问', count: 14 }
+    ]
+  }
+  timeline.value = {
+    daily_activity: [
+      { date: '2026-06-26', count: 4, watch_minutes: 12 },
+      { date: '2026-06-27', count: 7, watch_minutes: 20 },
+      { date: '2026-06-28', count: 2, watch_minutes: 6 },
+      { date: '2026-06-29', count: 9, watch_minutes: 25 },
+      { date: '2026-06-30', count: 5, watch_minutes: 15 },
+      { date: '2026-07-01', count: 12, watch_minutes: 8 }
+    ],
+    mastery_curve: report.value.mastery_items
+  }
+  loading.value = false
+  error.value = ''
+}
+
 async function loadReport() {
+  // 示例报告无需登录，直接展示静态数据供访客预览。
+  if (props.courseId === 'demo') {
+    loading.value = true
+    error.value = ''
+    // 让 loading 态短暂展示，避免界面闪烁。
+    setTimeout(loadDemoReport, 0)
+    return
+  }
   if (!user.isLoggedIn) {
     error.value = '请先登录'
     report.value = null
@@ -202,16 +331,21 @@ async function loadReport() {
     report.value = null
     return
   }
+  const myVersion = ++loadReportVersion
   loading.value = true
   error.value = ''
   try {
-    report.value = await apiFetch(
+    const data = await apiFetch(
       `/api/users/me/report?course_id=${encodeURIComponent(props.courseId)}`
     )
+    // 旧请求返回时丢弃，避免覆盖更新的 courseId 结果。
+    if (myVersion !== loadReportVersion) return
+    report.value = data
     cacheReport(report.value)
     // Load timeline independently so a timeline failure does not mask the report.
     loadTimeline()
   } catch (err) {
+    if (myVersion !== loadReportVersion) return
     error.value = err.message || '报告暂时无法加载，稍后再来看看'
     const cached = loadCachedReport()
     if (cached) {
@@ -221,7 +355,9 @@ async function loadReport() {
       report.value = null
     }
   } finally {
-    loading.value = false
+    if (myVersion === loadReportVersion) {
+      loading.value = false
+    }
   }
 }
 
@@ -352,7 +488,7 @@ function exportReport() {
       </section>
 
       <section class="section">
-        <h2 class="section-title">学习活跃度（近 30 天）</h2>
+        <h2 class="section-title">学习活跃度热力图（近 30 天）</h2>
         <div v-if="timelineLoading" class="timeline-loading">加载时序数据…</div>
         <div v-else-if="timelineError" class="timeline-error">{{ timelineError }}</div>
         <div v-else-if="heatmapData.length" class="heatmap">
@@ -368,6 +504,33 @@ function exportReport() {
           </div>
         </div>
         <p v-else class="empty">暂无活跃度数据</p>
+        <!-- PRD 要求"视频时间轴上的停留与回看分布"，当前日历热力图展示的是日活；
+             视频时间轴热力图待后端 timeline.video_heatmap 支持后在此展示。 -->
+        <p v-if="!videoHeatmap.length" class="heatmap-hint">
+          视频时间轴停留与回看分布将在后端支持后展示。
+        </p>
+      </section>
+
+      <section v-if="videoHeatmap.length" class="section">
+        <h2 class="section-title">视频观看热力图（时间轴停留分布）</h2>
+        <div class="heatmap video-heatmap">
+          <div
+            v-for="(seg, idx) in videoHeatmap"
+            :key="seg.start ?? seg.time ?? idx"
+            class="heatmap-cell"
+            :style="{ background: videoHeatmapColor(seg.count ?? seg.value ?? 0) }"
+            :title="`${seg.start ?? seg.time ?? ''}：${seg.count ?? seg.value ?? 0} 次停留/回看`"
+          >
+            <span class="heatmap-count">{{ seg.count ?? seg.value ?? 0 }}</span>
+          </div>
+        </div>
+      </section>
+
+      <section v-if="questionDistributionData" class="section">
+        <h2 class="section-title">提问类型分布</h2>
+        <div class="mastery-chart-wrapper">
+          <Pie :data="questionDistributionData" :options="questionDistributionOptions" />
+        </div>
       </section>
 
       <section class="section">
@@ -832,6 +995,13 @@ function exportReport() {
 
 .heatmap-count {
   font-weight: 600;
+}
+
+.heatmap-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--tl-text-muted);
+  text-align: center;
 }
 
 .mastery-chart-wrapper {

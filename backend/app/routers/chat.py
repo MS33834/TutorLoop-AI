@@ -114,6 +114,10 @@ def _save_screenshot_if_any(screenshot: str | None) -> str | None:
             suffix = ".png"
         elif "jpg" in mime or "jpeg" in mime:
             suffix = ".jpg"
+        elif "webp" in mime:
+            suffix = ".webp"
+        elif "gif" in mime:
+            suffix = ".gif"
         else:
             logger.warning("Unsupported screenshot format: %s", mime)
             return None
@@ -157,16 +161,24 @@ async def _record_mastery_after_chat(
     context_text: str | None,
     student_answer: str | None,
     request: ChatRequest,
+    forced_answer: bool = False,
 ) -> None:
     """Best-effort assessment and BKT update after a Socratic turn.
 
     Runs after the SSE stream so the user is never blocked by the extra LLM
     call. Failures are logged and swallowed to avoid breaking the chat flow.
+
+    When ``forced_answer`` is True the student requested a direct answer
+    (need_answer mode). Seeing the answer does not demonstrate mastery, so we
+    still record the interaction but treat it as incorrect (no learning
+    transition credit) instead of trying to LLM-assess the student's reply,
+    which in this mode is usually "I don't know" / off-topic.
     """
     if not user_id or not course_id or not node_id:
         return
-    if not student_answer or not looks_like_answer(student_answer):
-        return
+    if not forced_answer:
+        if not student_answer or not looks_like_answer(student_answer):
+            return
 
     # The question the student is answering is the previous assistant turn in
     # the request history (the latest user message is the student's answer).
@@ -176,20 +188,26 @@ async def _record_mastery_after_chat(
             previous_question = msg.content
             break
 
-    try:
-        assessment = await assess_answer(
-            question_context=context_text or node_name or "",
-            student_answer=student_answer,
-            node_name=node_name,
-            question=previous_question,
-        )
-    except Exception as exc:
-        logger.warning("Answer assessment failed: %s", exc)
-        return
+    if forced_answer:
+        # need_answer mode: the student gave up and asked for the answer.
+        # Treat as incorrect so BKT does not credit mastery for reading the
+        # solution. The interaction is still recorded for analytics.
+        is_correct = False
+    else:
+        try:
+            assessment = await assess_answer(
+                question_context=context_text or node_name or "",
+                student_answer=student_answer,
+                node_name=node_name,
+                question=previous_question,
+            )
+        except Exception as exc:
+            logger.warning("Answer assessment failed: %s", exc)
+            return
 
-    is_correct = assessment.get("is_correct")
-    if is_correct is None:
-        return
+        is_correct = assessment.get("is_correct")
+        if is_correct is None:
+            return
 
     try:
         await bkt_engine.record_interaction(
@@ -208,10 +226,11 @@ async def _record_mastery_after_chat(
             is_correct=is_correct,
         )
         logger.info(
-            "Updated mastery for user=%s node=%s is_correct=%s",
+            "Updated mastery for user=%s node=%s is_correct=%s forced_answer=%s",
             user_id,
             node_id,
             is_correct,
+            forced_answer,
         )
     except Exception as exc:
         logger.warning("Mastery update after chat failed: %s", exc)
@@ -231,7 +250,11 @@ async def _sse_event_stream(request: ChatRequest, user_id: str | None, course_id
         if last_msg.role == "user":
             student_answer = last_msg.content
 
-    if request.video_id and (request.screenshot or request.timestamp is not None):
+    if request.video_id:
+        # Trigger RAG whenever a video context is requested, even without a
+        # screenshot or timestamp. The screenshot and timestamp are optional
+        # enhancements (visual grounding + frame seek); the absence of both
+        # should not block retrieval of video/course knowledge nodes.
         screenshot_path = _save_screenshot_if_any(request.screenshot)
         has_screenshot = screenshot_path is not None
         try:
@@ -297,19 +320,30 @@ async def _sse_event_stream(request: ChatRequest, user_id: str | None, course_id
         yield "data: [DONE]\n\n"
 
         # After the stream finishes, assess the student's answer and update
-        # mastery when in Socratic mode. This only runs when no exception
-        # interrupted the response.
-        if not request.need_answer:
-            await _record_mastery_after_chat(
-                user_id=user_id,
-                course_id=course_id,
-                video_id=request.video_id,
-                node_id=node_id,
-                node_name=node_name,
-                context_text=context_text,
-                student_answer=student_answer,
-                request=request,
-            )
+        # mastery. This runs in both Socratic and need_answer modes so that
+        # giving up (need_answer) is still recorded as a (failed) interaction
+        # rather than silently dropped from the learning record. Failures here
+        # are logged inside the helper and never break the stream.
+        await _record_mastery_after_chat(
+            user_id=user_id,
+            course_id=course_id,
+            video_id=request.video_id,
+            node_id=node_id,
+            node_name=node_name,
+            context_text=context_text,
+            student_answer=student_answer,
+            request=request,
+            forced_answer=bool(request.need_answer),
+        )
+    except Exception as exc:
+        # Surface streaming failures to the client as a structured SSE error
+        # event (type="error" + message) so the frontend can show a meaningful
+        # notice instead of the connection dying silently. Without this the
+        # client only sees a truncated stream and may render a partial reply.
+        logger.exception("SSE stream failed: %s", exc)
+        error_event = {"type": "error", "message": f"流式响应失败: {exc}"}
+        yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
     finally:
         # Clean up the screenshot temp file now that streaming is done.
         if screenshot_path:

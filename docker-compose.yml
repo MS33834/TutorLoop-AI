@@ -72,6 +72,16 @@ services:
       # Vite dev server origins to call the API. Without this the default
       # (localhost:5173 only) blocks all browser requests from the compose stack.
       CORS_ORIGINS: http://localhost,http://localhost:5173,http://localhost:4173,http://127.0.0.1
+      # --- LLM configuration -------------------------------------------------
+      # Cloud LLM providers: comma-separated lists of equal length. Leave empty
+      # to fall back to LOCAL_BASE_URL/LOCAL_MODEL below.
+      # LLM_API_KEYS: sk-xxx,sk-yyy
+      # LLM_BASE_URLS: https://api.deepseek.com/v1,https://api.openai.com/v1
+      # LLM_MODELS: deepseek-chat,gpt-4o-mini
+      # Local fallback LLM (vLLM / Ollama). Uncomment and point at a running
+      # local model server to use it when no cloud keys are configured.
+      LOCAL_BASE_URL: http://localhost:8001/v1
+      LOCAL_MODEL: qwen3.5-4b
     volumes:
       - uploads_data:/app/uploads
     ports:
@@ -103,7 +113,20 @@ services:
       NEO4J_PASSWORD: password
       REDIS_URL: redis://redis:6379
       UPLOAD_DIR: /app/uploads
+      # The backend service runs Alembic migrations on startup; the worker must
+      # NOT also run them (or call create_all) to avoid racing the backend on a
+      # half-applied migration chain. Migrations are managed via Alembic only.
+      RUN_ALEMBIC_MIGRATIONS: "false"
       SECRET_KEY: ${SECRET_KEY:-tutorloop-local-dev-secret-key-not-for-production-use}
+      # --- LLM configuration -------------------------------------------------
+      # Same cloud/local LLM settings as the backend service. The worker runs
+      # video processing, KG extraction and AI key health probes, so it needs
+      # the same provider configuration. Uncomment the cloud keys to enable.
+      # LLM_API_KEYS: sk-xxx,sk-yyy
+      # LLM_BASE_URLS: https://api.deepseek.com/v1,https://api.openai.com/v1
+      # LLM_MODELS: deepseek-chat,gpt-4o-mini
+      LOCAL_BASE_URL: http://localhost:8001/v1
+      LOCAL_MODEL: qwen3.5-4b
     volumes:
       - uploads_data:/app/uploads
     depends_on:
@@ -122,9 +145,10 @@ services:
       dockerfile: Dockerfile
       args:
         # Vite inlines VITE_* at build time; pass it as a build arg so the
-        # produced bundle points at the backend service. Defaults to the
-        # backend container's address when accessed from the host.
-        VITE_API_BASE_URL: http://localhost:8000
+        # produced bundle points at the backend service. Override
+        # VITE_API_BASE_URL (e.g. via a .env file or shell export) to match
+        # the deployed backend's public URL; defaults to localhost for local dev.
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
     container_name: tutorloop-frontend
     restart: unless-stopped
     ports:

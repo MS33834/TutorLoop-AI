@@ -4,7 +4,7 @@ import logging
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import Float, cast, func, select
+from sqlalchemy import case, func, select
 
 from app.db.postgres import AsyncSessionLocal
 from app.models.db import Interaction, KnowledgeNode, Mastery, User
@@ -25,7 +25,9 @@ def _fill_activity_trend(rows: list[tuple[datetime | date, int]]) -> list[dict[s
         counts[_format_date(day_value)] = count or 0
 
     trend = []
-    today = date.today()
+    # Use UTC date to match the timezone-aware ``created_at`` storage so the
+    # 7-day window aligns with the days the data was actually recorded on.
+    today = datetime.now(timezone.utc).date()
     for offset in range(6, -1, -1):
         day = today - timedelta(days=offset)
         trend.append({"date": day.isoformat(), "count": counts.get(day.isoformat(), 0)})
@@ -130,7 +132,7 @@ async def generate_class_report(course_id: str, skip: int = 0, limit: int = 20) 
                 func.count(Interaction.id).label("interaction_count"),
                 func.coalesce(func.sum(Interaction.watch_seconds), 0.0).label("watch_seconds"),
                 func.coalesce(
-                    func.avg(cast(Interaction.is_correct, Float)), 0.0
+                    func.avg(case((Interaction.is_correct == True, 1), else_=0)), 0.0
                 ).label("accuracy"),
                 func.max(Interaction.created_at).label("last_active_at"),
             )
@@ -171,6 +173,10 @@ async def generate_class_report(course_id: str, skip: int = 0, limit: int = 20) 
             .order_by("day")
         )
 
+    # NOTE: class_avg_mastery is computed over mastery rows, which only exist
+    # for users who have interacted with the course (mastery is lazily
+    # initialized on first interaction). Enrolled-but-inactive students are
+    # therefore excluded; this is the average mastery of *active* learners.
     class_avg_mastery = _class_avg_mastery(mastery_list)
     mastery_by_user: dict[str, list[float]] = defaultdict(list)
     for user_id, p_known, *_rest in mastery_list:

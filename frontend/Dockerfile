@@ -5,7 +5,10 @@ WORKDIR /app
 
 # VITE_* variables are read at build time, so accept them as build args and
 # expose them as ENV so `npm run build` can inline them into the bundle.
-ARG VITE_API_BASE_URL
+# Default to localhost:8000 so a build without an explicit API URL still
+# produces a valid CSP (connect-src 'self' http://localhost:8000) rather than
+# an empty directive that would silently loosen the policy.
+ARG VITE_API_BASE_URL=http://localhost:8000
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 
 COPY package*.json ./

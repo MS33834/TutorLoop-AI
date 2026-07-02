@@ -11,6 +11,8 @@ const courses = ref([])
 const roomsByCourse = ref({})
 const loading = ref(false)
 const error = ref('')
+// 轮询（后台定时刷新房间列表）的错误单独存放，不覆盖课程加载错误。
+const pollError = ref('')
 const expandedCourse = ref('')
 const refreshTimer = ref(null)
 
@@ -18,6 +20,8 @@ const creatingFor = ref('')
 const createTitle = ref('')
 const createPassword = ref('')
 const createExpiresAt = ref('')
+const createWelcomeMessage = ref('')
+const createMaxParticipants = ref('')
 const createAllowAnonymous = ref(true)
 const createLoading = ref(false)
 const createError = ref('')
@@ -54,6 +58,7 @@ function clearRefreshTimer() {
 async function loadCourses() {
   loading.value = true
   error.value = ''
+  pollError.value = ''
   try {
     const data = await apiFetch('/api/courses')
     courses.value = Array.isArray(data) ? data : []
@@ -72,6 +77,7 @@ async function toggleCourse(courseId) {
   }
   expandedCourse.value = courseId
   clearRefreshTimer()
+  pollError.value = ''
   await loadRooms(courseId)
   refreshTimer.value = setInterval(() => {
     if (expandedCourse.value === courseId) {
@@ -84,8 +90,10 @@ async function loadRooms(courseId) {
   try {
     const data = await listCourseRooms(courseId)
     roomsByCourse.value[courseId] = Array.isArray(data) ? data : []
+    pollError.value = ''
   } catch (err) {
-    error.value = err.message || '加载房间失败'
+    // 轮询/房间列表错误用独立 ref，避免覆盖课程加载层面的错误。
+    pollError.value = err.message || '加载房间失败'
   }
 }
 
@@ -94,6 +102,8 @@ function startCreate(courseId) {
   createTitle.value = ''
   createPassword.value = ''
   createExpiresAt.value = ''
+  createWelcomeMessage.value = ''
+  createMaxParticipants.value = ''
   createAllowAnonymous.value = true
   createError.value = ''
 }
@@ -112,9 +122,11 @@ async function submitCreate(courseId) {
   try {
     const payload = {
       title: createTitle.value.trim() || undefined,
+      welcome_message: createWelcomeMessage.value.trim() || undefined,
       password: createPassword.value.trim() || undefined,
       expires_at: createExpiresAt.value || undefined,
-      allow_anonymous: createAllowAnonymous.value
+      allow_anonymous: createAllowAnonymous.value,
+      max_participants: createMaxParticipants.value ? Number(createMaxParticipants.value) : undefined
     }
     await createRoom(courseId, payload)
     await loadRooms(courseId)
@@ -146,7 +158,8 @@ async function toggleRoomActive(courseId, room) {
 }
 
 function shareUrl(slug) {
-  return `${window.location.origin}/room/${encodeURIComponent(slug)}`
+  // 项目使用 hash 路由（createWebHashHistory），分享链接需带 # 前缀。
+  return `${window.location.origin}/#/room/${encodeURIComponent(slug)}`
 }
 
 function openQrcode(room) {
@@ -281,12 +294,20 @@ function formatActivity(iso) {
               <input v-model="createTitle" class="field-input" type="text" placeholder="例如：初一1班晚自习" />
             </label>
             <label class="field">
+              <span class="field-label">欢迎语</span>
+              <textarea v-model="createWelcomeMessage" class="field-input" rows="2" placeholder="学生进入房间时看到的提示"></textarea>
+            </label>
+            <label class="field">
               <span class="field-label">房间密码（留空表示公开）</span>
               <input v-model="createPassword" class="field-input" type="password" placeholder="可选" />
             </label>
             <label class="field">
               <span class="field-label">过期时间（留空表示永不过期）</span>
               <input v-model="createExpiresAt" class="field-input" type="datetime-local" />
+            </label>
+            <label class="field">
+              <span class="field-label">人数上限（留空表示不限）</span>
+              <input v-model="createMaxParticipants" class="field-input" type="number" min="1" />
             </label>
             <label class="field checkbox">
               <input v-model="createAllowAnonymous" type="checkbox" />
@@ -300,6 +321,8 @@ function formatActivity(iso) {
             </div>
             <div v-if="createError" class="form-error">{{ createError }}</div>
           </form>
+
+          <div v-if="pollError" class="poll-error">{{ pollError }}</div>
 
           <div v-if="roomsByCourse[course.id]?.length" class="room-list">
             <div
@@ -663,6 +686,15 @@ function formatActivity(iso) {
   font-size: 0.875rem;
   background: #f9fafb;
   border-radius: 0.5rem;
+}
+
+.poll-error {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  color: #b45309;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  border-radius: 0.375rem;
 }
 
 .qrcode-modal {

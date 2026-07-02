@@ -160,10 +160,19 @@ async def _find_best_frame(course_id: str, node: dict) -> dict | None:
 
 
 def _build_prereq_map(edges: list[dict]) -> dict[str, set[str]]:
-    """Map node_id -> set of prerequisite node_ids, ignoring cycles."""
+    """Map node_id -> set of prerequisite node_ids, ignoring cycles.
+
+    ``prerequisite`` (and its short form ``prereq``) is the primary learning
+    dependency. ``next`` is also treated as a directional prerequisite (A next
+    B implies A should be learned before B). Symmetric relations such as
+    ``related`` are intentionally excluded because they do not imply a learning
+    order and would create false dependencies in the depth graph.
+    """
+    prereq_like = {"prerequisite", "prereq", "next"}
     prereq_map: dict[str, set[str]] = {}
     for edge in edges:
-        if edge.get("relation", "prerequisite") != "prerequisite":
+        relation = (edge.get("relation") or "prerequisite").strip().lower()
+        if relation not in prereq_like:
             continue
         from_id = edge.get("from")
         to_id = edge.get("to")
@@ -174,31 +183,42 @@ def _build_prereq_map(edges: list[dict]) -> dict[str, set[str]]:
 
 
 def _compute_depth(prereq_map: dict[str, set[str]]) -> dict[str, int]:
-    """Compute longest prerequisite chain depth for each node (DAG)."""
-    depth_cache: dict[str, int] = {}
+    """Compute longest prerequisite chain depth for each node (DAG).
 
-    def depth(node_id: str, visiting: set[str] | None = None) -> int:
-        if node_id in depth_cache:
-            return depth_cache[node_id]
-        if visiting is None:
-            visiting = set()
-        if node_id in visiting:
-            # Cycle detected: return 0 but do NOT cache it, otherwise the
-            # cycle's nodes would be permanently stuck at depth 0 and skew
-            # downstream recommendation ordering. Returning 0 just breaks the
-            # recursion for this path.
-            return 0
-        visiting.add(node_id)
-        prereqs = prereq_map.get(node_id, set())
-        max_depth = 1 + max((depth(p, visiting) for p in prereqs), default=0)
-        visiting.discard(node_id)
-        depth_cache[node_id] = max_depth
-        return max_depth
+    Uses an iterative Kahn-style topological relaxation instead of recursion so
+    deep chains cannot overflow the stack. Nodes that participate in (or depend
+    on) a cycle never reach in-degree zero and are left at depth 0 so they do
+    not skew downstream ordering.
+    """
+    from collections import deque
 
     all_nodes = set(prereq_map.keys()) | {p for deps in prereq_map.values() for p in deps}
-    for node_id in all_nodes:
-        depth(node_id)
-    return depth_cache
+    in_degree: dict[str, int] = {n: 0 for n in all_nodes}
+    dependents: dict[str, set[str]] = {n: set() for n in all_nodes}
+    depth: dict[str, int] = {n: 0 for n in all_nodes}
+
+    for node, prereqs in prereq_map.items():
+        in_degree[node] = len(prereqs)
+        for p in prereqs:
+            dependents[p].add(node)
+
+    # Seed the queue with nodes that have no prerequisites (depth 1).
+    queue = deque(n for n in all_nodes if in_degree[n] == 0)
+    for n in queue:
+        depth[n] = 1
+
+    while queue:
+        u = queue.popleft()
+        for v in dependents[u]:
+            if depth[u] + 1 > depth[v]:
+                depth[v] = depth[u] + 1
+            in_degree[v] -= 1
+            if in_degree[v] == 0:
+                queue.append(v)
+
+    # Nodes still with in_degree > 0 are part of (or downstream of) a cycle;
+    # they keep depth 0 as a safe fallback.
+    return depth
 
 
 async def recommend_next(user_id: str, course_id: str) -> dict | None:
@@ -261,8 +281,15 @@ async def recommend_next(user_id: str, course_id: str) -> dict | None:
         node_id = node.get("id")
         record = mastery_by_node.get(node_id)
         if record is None:
-            continue
-        if record["p_known"] >= record["threshold"]:
+            # New node with no mastery history: treat as unmastered (p_known=0)
+            # so it becomes a recommendation candidate rather than being
+            # silently skipped. New content should surface to the learner.
+            record = {
+                "node_id": node_id,
+                "p_known": 0.0,
+                "threshold": node.get("threshold", 0.8),
+            }
+        if record.get("p_known", 0.0) >= record.get("threshold", 0.8):
             continue
         prereqs = prereq_map.get(node_id, set())
         if not prereqs.issubset(mastered_ids):

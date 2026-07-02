@@ -37,3 +37,20 @@ export function deleteRoom(roomId) {
     method: 'DELETE'
   })
 }
+
+/**
+ * 离开房间：通知后端该会话已结束，便于准确统计停留时长。
+ */
+export function leaveRoom(slug, sessionId) {
+  return apiFetch(`/api/rooms/${encodeURIComponent(slug)}/leave`, {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId || undefined })
+  })
+}
+
+/**
+ * 获取房间二维码（后端可返回图片数据或链接）。
+ */
+export function getQRCode(slug) {
+  return apiFetch(`/api/rooms/${encodeURIComponent(slug)}/qrcode`)
+}

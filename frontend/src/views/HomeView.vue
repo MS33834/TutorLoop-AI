@@ -68,10 +68,7 @@ function handleSecondaryAction() {
     if (el) el.scrollIntoView({ behavior: 'smooth' })
     return
   }
-  if (target === '/report/demo' && !userStore.isLoggedIn) {
-    router.push('/login')
-    return
-  }
+  // /report/demo 为示例报告，未登录也可预览，无需跳转登录。
   router.push(target)
 }
 
@@ -267,6 +264,7 @@ function goToGraph(course) {
     router.push('/login')
     return
   }
+  // 知识图谱编辑仅限老师/管理员；非老师点击后由路由守卫引导至 403 页面。
   router.push(`/graph/${course.id}`)
 }
 
@@ -464,7 +462,7 @@ function goToDashboard() {
               @click="goToGraph(course)"
               :aria-label="'查看课程知识图谱：' + course.title"
             >
-              知识图谱
+              {{ userStore.isLoggedIn ? '知识图谱' : '需登录' }}
             </button>
           </div>
         </article>

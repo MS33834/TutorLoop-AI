@@ -8,7 +8,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['jump'])
+const emit = defineEmits(['jump', 'view-node'])
 
 const nodeName = computed(() => {
   if (typeof props.recommendation?.node === 'string') return props.recommendation.node
@@ -23,10 +23,28 @@ const hasTarget = computed(() => {
   return typeof props.recommendation?.timestamp_seconds === 'number'
 })
 
+// 无视频时间戳但有知识点时，降级为"查看知识点详情"。
+const hasNode = computed(() => {
+  const rec = props.recommendation
+  if (!rec) return false
+  if (rec.node && typeof rec.node === 'object') return Boolean(rec.node.id || rec.node.name)
+  return Boolean(rec.node_id || rec.node)
+})
+
 function jump() {
   if (typeof props.recommendation?.timestamp_seconds === 'number') {
     emit('jump', props.recommendation.timestamp_seconds)
   }
+}
+
+function viewNode() {
+  const rec = props.recommendation
+  if (!rec) return
+  const node = (rec.node && typeof rec.node === 'object') ? rec.node : null
+  emit('view-node', {
+    node_id: node?.id || rec.node_id || null,
+    name: node?.name || (typeof rec.node === 'string' ? rec.node : nodeName.value)
+  })
 }
 </script>
 
@@ -42,6 +60,14 @@ function jump() {
       @click="jump"
     >
       学习这个知识点
+    </button>
+    <button
+      v-else-if="hasNode"
+      class="jump-btn secondary"
+      type="button"
+      @click="viewNode"
+    >
+      查看知识点详情
     </button>
   </div>
 </template>
@@ -89,5 +115,13 @@ function jump() {
 
 .jump-btn:active {
   background: #059669;
+}
+
+.jump-btn.secondary {
+  background: #2563eb;
+}
+
+.jump-btn.secondary:active {
+  background: #1d4ed8;
 }
 </style>

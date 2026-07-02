@@ -1,16 +1,19 @@
 <script setup>
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
+import { apiFetch } from '../api/client'
 
 const props = defineProps({
   src: { type: String, default: '' },
   poster: { type: String, default: '' },
   subtitles: { type: Array, default: () => [] },
-  highlightWords: { type: Array, default: () => [] }
+  highlightWords: { type: Array, default: () => [] },
+  videoId: { type: String, default: '' }
 })
 
 const emit = defineEmits(['screenshot', 'timeupdate', 'screenshot-error'])
 
 const video = ref(null)
+const videoContainerRef = ref(null)
 const playing = ref(false)
 const currentTime = ref(0)
 const duration = ref(0)
@@ -19,6 +22,9 @@ const showControls = ref(true)
 const playbackRate = ref(1)
 const showSubtitles = ref(true)
 const screenshotError = ref('')
+const isDragging = ref(false)
+const volume = ref(1)
+const isFullscreen = ref(false)
 let controlsTimer = null
 let screenshotErrorTimer = null
 
@@ -110,11 +116,38 @@ function onTimeUpdate() {
   if (!video.value) return
   currentTime.value = video.value.currentTime
   emit('timeupdate', currentTime.value)
+  // 节流上报观看进度到后端（每 15 秒）
+  _syncProgressThrottled()
 }
 
-function onLoadedMetadata() {
+let _lastSyncTs = 0
+function _syncProgressThrottled() {
+  if (!props.videoId || !video.value) return
+  const now = Date.now()
+  if (now - _lastSyncTs < 15000) return
+  _lastSyncTs = now
+  apiFetch(`/api/users/me/videos/${props.videoId}/progress`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      position_seconds: video.value.currentTime,
+      watched_seconds: video.value.currentTime,
+      video_id: props.videoId,
+    }),
+  }).catch(() => { /* 进度同步失败不影响播放 */ })
+}
+
+async function onLoadedMetadata() {
   if (!video.value) return
   duration.value = video.value.duration
+  // 恢复上次播放位置
+  if (props.videoId) {
+    try {
+      const res = await apiFetch(`/api/users/me/videos/${props.videoId}/progress`)
+      if (res?.position_seconds && res.position_seconds > 5) {
+        video.value.currentTime = res.position_seconds
+      }
+    } catch { /* 忽略，从头播放 */ }
+  }
 }
 
 function onProgress() {
@@ -127,6 +160,54 @@ function seek(e) {
   const rect = e.currentTarget.getBoundingClientRect()
   const ratio = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1)
   video.value.currentTime = ratio * duration.value
+}
+
+// 进度条拖动 seek：pointerdown 起始定位，pointermove 持续跟随，pointerup 结束。
+// 使用 window 级监听确保拖出进度条后仍能继续拖动。
+function onProgressPointerDown(e) {
+  isDragging.value = true
+  seek(e)
+  window.addEventListener('pointermove', onProgressPointerMove)
+  window.addEventListener('pointerup', onProgressPointerUp)
+}
+
+function onProgressPointerMove(e) {
+  if (!isDragging.value || !video.value || !duration.value) return
+  // 使用进度条元素的矩形计算比例，保证拖动到边缘也能精确定位。
+  const progressBar = e.currentTarget
+  // move 事件注册在 window 上，currentTarget 为 window；改用首个进度条元素。
+  const target = document.querySelector('.video-player .progress-bar')
+  if (!target) return
+  const rect = target.getBoundingClientRect()
+  const ratio = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1)
+  video.value.currentTime = ratio * duration.value
+}
+
+function onProgressPointerUp() {
+  isDragging.value = false
+  window.removeEventListener('pointermove', onProgressPointerMove)
+  window.removeEventListener('pointerup', onProgressPointerUp)
+}
+
+function changeVolume(e) {
+  if (!video.value) return
+  const v = Number(e.target.value)
+  volume.value = v
+  video.value.volume = v
+}
+
+function toggleFullscreen() {
+  const el = videoContainerRef.value
+  if (!el) return
+  if (document.fullscreenElement) {
+    document.exitFullscreen?.()
+  } else {
+    el.requestFullscreen?.()
+  }
+}
+
+function onFullscreenChange() {
+  isFullscreen.value = Boolean(document.fullscreenElement)
 }
 
 function seekTo(seconds) {
@@ -179,6 +260,14 @@ function onMouseMove() {
   resetControlsTimer()
 }
 
+// 触摸开始时只显示控制栏一次，不重置计时器，避免触摸滑动时反复延后隐藏。
+function onTouchStart() {
+  showControls.value = true
+  if (!controlsTimer) {
+    resetControlsTimer()
+  }
+}
+
 function resetControlsTimer() {
   clearTimeout(controlsTimer)
   controlsTimer = setTimeout(() => {
@@ -197,6 +286,21 @@ watch(() => props.src, () => {
 onBeforeUnmount(() => {
   clearTimeout(controlsTimer)
   clearTimeout(screenshotErrorTimer)
+  // 卸载时保存最后一次进度
+  if (props.videoId && video.value) {
+    apiFetch(`/api/users/me/videos/${props.videoId}/progress`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        position_seconds: video.value.currentTime,
+        watched_seconds: video.value.currentTime,
+        video_id: props.videoId,
+      }),
+    }).catch(() => {})
+  }
+  // 拖动未结束就卸载时，移除 window 级监听避免泄漏。
+  window.removeEventListener('pointermove', onProgressPointerMove)
+  window.removeEventListener('pointerup', onProgressPointerUp)
+  document.removeEventListener('fullscreenchange', onFullscreenChange)
 })
 
 defineExpose({
@@ -205,7 +309,14 @@ defineExpose({
 </script>
 
 <template>
-  <div class="video-player" @click="onContainerClick" @mousemove="onMouseMove" @touchstart="onMouseMove">
+  <div
+    ref="videoContainerRef"
+    class="video-player"
+    @click="onContainerClick"
+    @mousemove="onMouseMove"
+    @touchstart="onTouchStart"
+    @fullscreenchange="onFullscreenChange"
+  >
     <video
       ref="video"
       class="video"
@@ -228,10 +339,10 @@ defineExpose({
     />
 
     <div class="controls" :class="{ visible: showControls }">
-      <div class="progress-bar" @click.stop="seek">
+      <div class="progress-bar" @pointerdown.stop="onProgressPointerDown">
         <div class="buffered" :style="{ width: `${bufferedPercent}%` }" />
         <div class="progress" :style="{ width: `${progressPercent}%` }" />
-        <div class="thumb" :style="{ left: `${progressPercent}%` }" />
+        <div class="thumb" :class="{ dragging: isDragging }" :style="{ left: `${progressPercent}%` }" />
       </div>
 
       <div class="controls-row">
@@ -240,6 +351,19 @@ defineExpose({
         </button>
 
         <span class="time">{{ formattedCurrentTime }} / {{ formattedDuration }}</span>
+
+        <input
+          class="volume-slider"
+          type="range"
+          min="0"
+          max="1"
+          step="0.05"
+          :value="volume"
+          title="音量"
+          aria-label="音量"
+          @input="changeVolume"
+          @click.stop
+        />
 
         <button
           class="control-btn rate-btn"
@@ -263,6 +387,16 @@ defineExpose({
 
         <button class="control-btn screenshot-btn" type="button" title="截图提问" @click.stop="takeScreenshot">
           📷
+        </button>
+
+        <button
+          class="control-btn fullscreen-btn"
+          type="button"
+          :title="isFullscreen ? '退出全屏' : '全屏'"
+          :aria-label="isFullscreen ? '退出全屏' : '全屏'"
+          @click.stop="toggleFullscreen"
+        >
+          {{ isFullscreen ? '🗗' : '⛶' }}
         </button>
       </div>
     </div>
@@ -354,6 +488,19 @@ defineExpose({
   background: #ffffff;
   border-radius: 50%;
   box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.3);
+  transform: scale(1);
+  transition: transform 0.15s ease;
+}
+
+.thumb.dragging {
+  transform: scale(1.3);
+}
+
+.volume-slider {
+  width: 4.5rem;
+  height: 1rem;
+  cursor: pointer;
+  accent-color: #2563eb;
 }
 
 .controls-row {

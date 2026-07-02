@@ -651,20 +651,26 @@ async function _sendStreamRequest(body, assistantMessageId = null) {
       const payload = trimmed.slice(5).trim()
       if (payload === '[DONE]') continue
 
+      // 将 JSON 解析与业务错误处理分离：之前 throw 的错误事件被
+      // 与 JSON.parse 共用的 catch 静默吞掉，导致后端下发的 error 事件
+      // 永远无法到达上层的错误提示逻辑。
+      let data
       try {
-        const data = JSON.parse(payload)
-          if (data.type === 'token' && data.content) {
-            if (assistantMessageId) {
-              chat.appendAssistantTokenById(assistantMessageId, data.content)
-            } else {
-              chat.appendAssistantToken(data.content)
-            }
-            await scrollToBottom()
-          } else if (data.type === 'error') {
-            throw new Error(data.message || '辅导回复出错，请重试')
-          }
+        data = JSON.parse(payload)
       } catch {
-        // ignore malformed SSE lines
+        // 忽略无法解析的 SSE 行
+        continue
+      }
+
+      if (data.type === 'token' && data.content) {
+        if (assistantMessageId) {
+          chat.appendAssistantTokenById(assistantMessageId, data.content)
+        } else {
+          chat.appendAssistantToken(data.content)
+        }
+        await scrollToBottom()
+      } else if (data.type === 'error') {
+        throw new Error(data.message || '辅导回复出错，请重试')
       }
     }
   }
@@ -766,6 +772,14 @@ function onKeydown(e) {
     send()
   }
 }
+
+// 将秒数格式化为 m:ss，用于视频标签上的时长展示。
+function formatVideoDuration(seconds) {
+  const s = Math.max(0, Math.round(Number(seconds) || 0))
+  const m = Math.floor(s / 60)
+  const sec = s % 60
+  return `${m}:${String(sec).padStart(2, '0')}`
+}
 </script>
 
 <template>
@@ -803,6 +817,7 @@ function onKeydown(e) {
             :poster="currentVideo.poster_url || ''"
             :subtitles="subtitles"
             :highlight-words="subtitleKeywords"
+            :video-id="currentVideo?.id || ''"
             @screenshot="onScreenshot"
             @timeupdate="onTimeUpdate"
           />
@@ -829,7 +844,15 @@ function onKeydown(e) {
               type="button"
               @click="switchVideo(video)"
             >
-              {{ video.title || '未命名视频' }}
+              <img
+                v-if="video.poster_url"
+                :src="video.poster_url"
+                :alt="video.title || '未命名视频'"
+                class="video-tab-thumb"
+                loading="lazy"
+              />
+              <span class="video-tab-title">{{ video.title || '未命名视频' }}</span>
+              <span v-if="video.duration" class="video-tab-duration">{{ formatVideoDuration(video.duration) }}</span>
             </button>
           </div>
 
@@ -961,12 +984,21 @@ function onKeydown(e) {
             @keydown="onKeydown"
           />
           <button
+            v-if="loading"
+            class="stop-btn"
+            type="button"
+            @click="cancelStream"
+          >
+            停止
+          </button>
+          <button
+            v-else
             class="send-btn"
             type="button"
-            :disabled="(!input.trim() && !screenshot) || loading"
+            :disabled="(!input.trim() && !screenshot)"
             @click="send"
           >
-            {{ loading ? '…' : '提问' }}
+            提问
           </button>
         </div>
 
@@ -1406,6 +1438,23 @@ function onKeydown(e) {
   cursor: not-allowed;
 }
 
+.stop-btn {
+  height: 2.5rem;
+  padding: 0 1rem;
+  border: none;
+  border-radius: 1.25rem;
+  background: #ef4444;
+  color: #ffffff;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.stop-btn:hover {
+  background: #dc2626;
+}
+
 .page-status {
   padding: 2rem;
   text-align: center;
@@ -1489,9 +1538,12 @@ function onKeydown(e) {
 }
 
 .video-tab {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   padding: 0.375rem 0.75rem;
   border: 1px solid #e5e7eb;
-  border-radius: 9999px;
+  border-radius: 0.5rem;
   background: #f9fafb;
   color: #4b5563;
   font-size: 0.8125rem;
@@ -1499,10 +1551,37 @@ function onKeydown(e) {
   white-space: nowrap;
 }
 
+.video-tab-thumb {
+  width: 3rem;
+  height: 1.875rem;
+  object-fit: cover;
+  border-radius: 0.25rem;
+  flex-shrink: 0;
+}
+
+.video-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.video-tab-duration {
+  font-size: 0.6875rem;
+  color: #6b7280;
+  background: #ffffff;
+  padding: 0.0625rem 0.3125rem;
+  border-radius: 0.25rem;
+  flex-shrink: 0;
+}
+
 .video-tab.active {
   background: #2563eb;
   color: #ffffff;
   border-color: #2563eb;
+}
+
+.video-tab.active .video-tab-duration {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
 }
 
 .node-detail-modal {

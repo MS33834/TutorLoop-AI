@@ -1,7 +1,7 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Bar } from 'vue-chartjs'
+import { Bar, Line, Pie } from 'vue-chartjs'
 import {
   Chart as ChartJS,
   Title,
@@ -9,12 +9,15 @@ import {
   Legend,
   BarElement,
   CategoryScale,
-  LinearScale
+  LinearScale,
+  PointElement,
+  LineElement,
+  ArcElement
 } from 'chart.js'
 import { getClassReport } from '../api/reports.js'
 import { formatPercent, formatDate } from '../utils/format.js'
 
-ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale)
+ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale, PointElement, LineElement, ArcElement)
 
 const props = defineProps({
   courseId: { type: String, required: true }
@@ -28,6 +31,11 @@ const pageSize = ref(20)
 const currentSkip = ref(0)
 
 onMounted(() => {
+  loadReport()
+})
+
+// courseId 变化时重新加载班级报告。
+watch(() => props.courseId, () => {
   loadReport()
 })
 
@@ -64,7 +72,8 @@ function retryCurrentPage() {
 const activityChartData = computed(() => {
   const trend = report.value?.activity_trend || []
   return {
-    labels: trend.map((d) => d.date.slice(5)),
+    // 使用 toLocaleDateString 避免假设后端日期为固定 "YYYY-MM-DD" 格式。
+    labels: trend.map((d) => formatDayMonth(d.date)),
     datasets: [
       {
         label: '交互次数',
@@ -92,6 +101,125 @@ const activityChartOptions = {
     x: { grid: { display: false } }
   }
 }
+
+function formatDayMonth(value) {
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return value || ''
+  return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+}
+
+// 班级掌握度曲线：各知识点掌握度变化趋势（若后端返回 mastery_curve）。
+const masteryCurveData = computed(() => {
+  const curve = report.value?.mastery_curve
+  if (!Array.isArray(curve) || !curve.length) return null
+  return {
+    labels: curve.map((p) => p.label || p.date || p.name || ''),
+    datasets: [
+      {
+        label: '班级平均掌握度',
+        data: curve.map((p) => p.avg_p_known ?? p.p_known ?? p.value ?? 0),
+        borderColor: '#2563eb',
+        backgroundColor: 'rgba(37, 99, 235, 0.2)',
+        tension: 0.3,
+        fill: true
+      }
+    ]
+  }
+})
+
+const masteryCurveOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: { legend: { position: 'bottom' } },
+  scales: { y: { min: 0, max: 100, ticks: { callback: (v) => `${v}%` } } }
+}
+
+// 提问类型分布（若后端返回 question_distribution）。
+const questionDistributionData = computed(() => {
+  const dist = report.value?.question_distribution
+  if (!Array.isArray(dist) || !dist.length) return null
+  return {
+    labels: dist.map((d) => d.label || d.type || d.name),
+    datasets: [
+      {
+        data: dist.map((d) => d.count ?? d.value ?? 0),
+        backgroundColor: ['#2563eb', '#7c3aed', '#f59e0b', '#10b981', '#ef4444', '#06b6d4', '#ec4899'],
+        borderWidth: 1
+      }
+    ]
+  }
+})
+
+const questionDistributionOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 12 } } } }
+}
+
+function exportReport() {
+  const printWindow = window.open('', '_blank')
+  if (!printWindow) {
+    alert('请允许弹窗，以便导出报告。')
+    return
+  }
+
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]))
+
+  const title = esc('班级学情看板')
+  const summary = report.value?.summary || {}
+  const students = (report.value?.students || [])
+    .map((s) => `
+      <tr>
+        <td>${esc(s.username)}</td>
+        <td>${s.interaction_count ?? 0}</td>
+        <td>${s.watch_minutes ?? 0} 分钟</td>
+        <td>${formatPercent(s.accuracy)}</td>
+        <td>${formatPercent(s.avg_mastery)}</td>
+      </tr>
+    `).join('')
+
+  const html = `
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+      <meta charset="utf-8">
+      <title>${title}</title>
+      <style>
+        body { font-family: system-ui, -apple-system, sans-serif; color: #111827; padding: 2rem; }
+        h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+        .meta { color: #6b7280; margin-bottom: 1.5rem; }
+        .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+        .card { border: 1px solid #e5e7eb; border-radius: 0.75rem; padding: 1rem; text-align: center; }
+        .card .value { font-size: 1.25rem; font-weight: 700; }
+        .card .label { color: #6b7280; font-size: 0.875rem; }
+        table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+        th, td { border-bottom: 1px solid #e5e7eb; padding: 0.625rem; text-align: left; }
+        th { color: #6b7280; font-weight: 500; }
+      </style>
+    </head>
+    <body>
+      <h1>${title}</h1>
+      <p class="meta">生成时间：${formatDate(report.value?.generated_at)}</p>
+      <div class="summary">
+        <div class="card"><div class="value">${summary.total_students ?? 0}</div><div class="label">参与学生</div></div>
+        <div class="card"><div class="value">${formatPercent(summary.accuracy)}</div><div class="label">班级正确率</div></div>
+        <div class="card"><div class="value">${formatPercent(summary.class_avg_mastery)}</div><div class="label">平均掌握度</div></div>
+      </div>
+      <h2>学生明细</h2>
+      <table>
+        <thead><tr><th>学生</th><th>交互次数</th><th>观看时长</th><th>正确率</th><th>平均掌握度</th></tr></thead>
+        <tbody>${students}</tbody>
+      </table>
+    </body>
+    </html>
+  `
+  printWindow.document.write(html)
+  printWindow.document.close()
+  printWindow.focus()
+  printWindow.print()
+}
 </script>
 
 <template>
@@ -108,9 +236,12 @@ const activityChartOptions = {
           <h1 class="title">班级学情看板</h1>
           <p class="subtitle">生成时间：{{ formatDate(report.generated_at) }}</p>
         </div>
-        <button class="back-btn" type="button" @click="router.push('/dashboard')">
-          返回后台
-        </button>
+        <div class="header-actions">
+          <button class="back-btn" type="button" @click="exportReport">导出报告</button>
+          <button class="back-btn" type="button" @click="router.push('/dashboard')">
+            返回后台
+          </button>
+        </div>
       </header>
 
       <section class="summary">
@@ -161,6 +292,20 @@ const activityChartOptions = {
           <p v-else class="empty">暂无薄弱知识点，班级整体掌握良好。</p>
         </section>
       </div>
+
+      <section v-if="masteryCurveData" class="panel">
+        <h2 class="panel-title">班级掌握度曲线</h2>
+        <div class="chart-wrapper">
+          <Line :data="masteryCurveData" :options="masteryCurveOptions" />
+        </div>
+      </section>
+
+      <section v-if="questionDistributionData" class="panel">
+        <h2 class="panel-title">提问类型分布</h2>
+        <div class="chart-wrapper">
+          <Pie :data="questionDistributionData" :options="questionDistributionOptions" />
+        </div>
+      </section>
 
       <section class="panel">
         <h2 class="panel-title">学生明细</h2>
@@ -261,6 +406,11 @@ const activityChartOptions = {
   margin: 0.25rem 0 0;
   font-size: 0.875rem;
   color: #6b7280;
+}
+
+.header-actions {
+  display: flex;
+  gap: 0.5rem;
 }
 
 .back-btn {

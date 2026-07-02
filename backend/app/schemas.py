@@ -137,6 +137,7 @@ class RoomPublicResponse(BaseModel):
     allow_anonymous: bool
     is_active: bool
     expires_at: Optional[str]
+    max_participants: Optional[int] = None
     # Server-issued, HMAC-signed session token the client must present when
     # joining, so it cannot forge session_ids to bypass participant limits.
     session_token: Optional[str] = None
@@ -209,6 +210,7 @@ class InteractionCreate(BaseModel):
     help_count: int = Field(0, ge=0)
     watch_seconds: Optional[float] = Field(None, ge=0)
     node_id: Optional[str] = Field(None, max_length=64)
+    screenshot_url: Optional[str] = Field(None, max_length=2048)
 
 
 class InteractionResponse(BaseModel):
@@ -234,6 +236,9 @@ class MasteryItem(BaseModel):
     description: Optional[str]
     threshold: float
     p_known: float
+    p_t: float = 0.3
+    p_g: float = 0.2
+    p_s: float = 0.1
     interactions_count: int
 
 
@@ -264,3 +269,92 @@ class ReportResponse(BaseModel):
     summary: ReportSummary
     mastery_items: list[MasteryItem]
     weak_nodes: list[dict[str, Any]]
+    question_distribution: list[dict[str, Any]] = []
+
+
+class VideoProgressUpdate(BaseModel):
+    position_seconds: float = Field(..., ge=0)
+    watched_seconds: float = Field(..., ge=0)
+    video_id: str = Field(..., min_length=1, max_length=64)
+
+
+class VideoProgressResponse(BaseModel):
+    position_seconds: float
+    watched_seconds: float
+    last_watched_at: str
+    completion_rate: float
+
+
+class QRCodeResponse(BaseModel):
+    url: str
+    slug: str
+
+
+class MasterySnapshotItem(BaseModel):
+    node_id: str
+    node_name: str
+    p_known: float
+    created_at: str
+
+
+class MasteryCurveResponse(BaseModel):
+    node_id: str
+    node_name: str
+    history: list[MasterySnapshotItem]
+
+
+class QuestionDistributionItem(BaseModel):
+    category: str
+    count: int
+    percentage: float
+
+
+class ClassReportStudentItem(BaseModel):
+    user_id: str
+    username: str
+    interaction_count: int
+    watch_minutes: float
+    accuracy: float
+    avg_mastery: float
+    last_active_at: Optional[str] = None
+
+
+class ClassReportWeakNode(BaseModel):
+    node_id: str
+    name: str
+    avg_p_known: float
+    threshold: float
+    gap: float
+    struggling_students: int
+
+
+class ClassReportActivityPoint(BaseModel):
+    date: str
+    count: int
+
+
+class ClassReportSummary(BaseModel):
+    total_students: int
+    total_interactions: int
+    total_watch_minutes: float
+    total_help_count: int
+    correct_count: int
+    incorrect_count: int
+    accuracy: float
+    class_avg_mastery: float
+
+
+class ClassReportPagination(BaseModel):
+    total: int
+    skip: int
+    limit: int
+
+
+class ClassReportResponse(BaseModel):
+    course_id: str
+    generated_at: str
+    summary: ClassReportSummary
+    students: list[ClassReportStudentItem]
+    weak_nodes: list[ClassReportWeakNode]
+    activity_trend: list[ClassReportActivityPoint]
+    pagination: ClassReportPagination

@@ -10,7 +10,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from app.config import settings
 from app.db.postgres import AsyncSessionLocal
-from app.models.db import Interaction, KnowledgeNode, Mastery
+from app.models.db import Interaction, KnowledgeNode, Mastery, MasterySnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ def _bkt_update(p_l: float, is_correct: bool, p_g: float, p_s: float, p_t: float
         numerator = p_l * p_s
         denominator = p_l * p_s + (1 - p_l) * (1 - p_g)
 
-    denominator = denominator or 1e-9
+    denominator = denominator if denominator and denominator > 0 else 1e-9
     p_l_given_obs = numerator / denominator
     p_l_given_obs = max(0.0, min(1.0, p_l_given_obs))
     p_l_next = p_l_given_obs + (1 - p_l_given_obs) * p_t
@@ -65,9 +65,13 @@ async def initialize_mastery(user_id: str, course_id: str) -> None:
         if not all_node_ids:
             return
 
-        # Batch load existing mastery records for this user.
+        # Batch load existing mastery records for this user, scoped to the
+        # current course via the node join so we don't pull records from other
+        # courses the user may be enrolled in.
         existing_result = await session.execute(
-            select(Mastery.node_id).where(Mastery.user_id == user_id)
+            select(Mastery.node_id)
+            .join(KnowledgeNode, Mastery.node_id == KnowledgeNode.id)
+            .where(Mastery.user_id == user_id, KnowledgeNode.course_id == course_id)
         )
         existing_node_ids = {row[0] for row in existing_result.all()}
 
@@ -82,6 +86,9 @@ async def initialize_mastery(user_id: str, course_id: str) -> None:
                         "node_id": node_id,
                         "p_known": settings.bkt_p_l0,
                         "p_t": settings.bkt_p_t,
+                        "p_g": settings.bkt_p_g,
+                        "p_s": settings.bkt_p_s,
+                        "p_l0": settings.bkt_p_l0,
                         "interactions_count": 0,
                     }
                     for node_id in missing
@@ -97,26 +104,68 @@ async def update_mastery(user_id: str, node_id: str, is_correct: bool) -> dict:
     If no Mastery row exists yet (e.g. new nodes were added to the course after
     the user's last ``initialize_mastery``), lazily initialize the course's
     mastery records so the interaction is never left dangling with a 404.
+
+    ``initialize_mastery`` runs in its own session/transaction so the backfill
+    commit does not interfere with this session's pending work. After each
+    update a ``MasterySnapshot`` row is appended for time-series mastery curves.
     """
     async with AsyncSessionLocal() as session:
-        mastery = await session.get(Mastery, {"user_id": user_id, "node_id": node_id})
+        # Load the mastery row together with its node so we can read
+        # ``course_id`` for the snapshot without an extra round-trip and without
+        # triggering async lazy-loading (which would raise MissingGreenlet).
+        result = await session.execute(
+            select(Mastery)
+            .options(selectinload(Mastery.node))
+            .where(Mastery.user_id == user_id, Mastery.node_id == node_id)
+        )
+        mastery = result.scalar_one_or_none()
+
         if mastery is None:
             # Resolve the course from the node and backfill missing records.
             node = await session.get(KnowledgeNode, node_id)
             if node is None:
                 raise HTTPException(status_code=404, detail="未找到知识点节点")
             course_id = node.course_id
+            # Roll back to clear this session's pending state before the
+            # independent initialize_mastery session commits new rows.
             await session.rollback()
+            # initialize_mastery opens its own session, so its commit cannot
+            # corrupt this session's transaction.
             await initialize_mastery(user_id, course_id)
-            mastery = await session.get(Mastery, {"user_id": user_id, "node_id": node_id})
+            result = await session.execute(
+                select(Mastery)
+                .options(selectinload(Mastery.node))
+                .where(Mastery.user_id == user_id, Mastery.node_id == node_id)
+            )
+            mastery = result.scalar_one_or_none()
             if mastery is None:
                 raise HTTPException(status_code=404, detail="未找到掌握度记录")
 
-        mastery.p_known = _bkt_update(
-            mastery.p_known, is_correct, settings.bkt_p_g, settings.bkt_p_s, p_t=mastery.p_t
-        )
+        course_id = mastery.node.course_id
+
+        # Use per-node BKT parameters when available, falling back to the
+        # global settings defaults if a value is missing or zero (which can
+        # happen for rows created before the p_g/p_s/p_l0 columns existed).
+        p_t = mastery.p_t if mastery.p_t else settings.bkt_p_t
+        p_g = mastery.p_g if mastery.p_g else settings.bkt_p_g
+        p_s = mastery.p_s if mastery.p_s else settings.bkt_p_s
+
+        new_p_known = _bkt_update(mastery.p_known, is_correct, p_g, p_s, p_t=p_t)
+        mastery.p_known = new_p_known
+        mastery.p_t = p_t
         mastery.interactions_count += 1
         mastery.updated_at = datetime.now(UTC)
+
+        # Append a mastery history snapshot for time-series analytics.
+        snapshot = MasterySnapshot(
+            user_id=user_id,
+            node_id=node_id,
+            course_id=course_id,
+            p_known=new_p_known,
+            p_t=p_t,
+        )
+        session.add(snapshot)
+
         await session.commit()
         await session.refresh(mastery)
 
@@ -168,6 +217,8 @@ async def get_mastery(user_id: str, course_id: str) -> list[dict]:
                 "threshold": record.node.threshold,
                 "p_known": record.p_known,
                 "p_t": record.p_t,
+                "p_g": record.p_g,
+                "p_s": record.p_s,
                 "interactions_count": record.interactions_count,
             }
             for record in records

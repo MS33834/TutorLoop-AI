@@ -2,13 +2,16 @@
 
 import hashlib
 import hmac
+import io
 import logging
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
+from fastapi.responses import JSONResponse, Response
+from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
@@ -33,6 +36,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 MAX_SLUG_RETRIES = 5
+# A signed session token is valid for this long after issuance. Clients are
+# expected to call GET /api/rooms/{slug} (which issues a fresh token) before
+# joining, so the TTL only needs to cover the join window. Kept short to limit
+# the blast radius of a leaked token.
+SESSION_TOKEN_TTL_SECONDS = 24 * 3600
 
 
 def _generate_slug() -> str:
@@ -40,29 +48,45 @@ def _generate_slug() -> str:
     return secrets.token_urlsafe(6)[:8]
 
 
-def _sign_session_id(room_id: str, raw_session: str) -> str:
-    """Return an HMAC signature over (room_id, raw_session) using SECRET_KEY.
+def _sign_session_id(room_id: str, raw_session: str, expires_at: int) -> str:
+    """Return an HMAC signature over (room_id, raw_session, expires_at).
 
-    The signed session_id format is ``raw_session.signature`` so the server can
-    verify a session_id was issued by it (via get_room) and not fabricated by a
-    client to bypass participant-count deduplication.
+    The signed session_id format is ``raw_session.expires_at.signature`` so the
+    server can verify a session_id was issued by it (via get_room) and not
+    fabricated by a client to bypass participant-count deduplication. The
+    embedded ``expires_at`` (unix seconds, UTC) lets the server reject stale
+    tokens without keeping server-side state.
     """
     mac = hmac.new(
         settings.secret_key.encode("utf-8"),
-        f"{room_id}:{raw_session}".encode("utf-8"),
+        f"{room_id}:{raw_session}:{expires_at}".encode("utf-8"),
         hashlib.sha256,
     )
-    return f"{raw_session}.{mac.hex()}"
+    return f"{raw_session}.{expires_at}.{mac.hexdigest()}"
 
 
 def _verify_session_id(room_id: str, signed_session: str) -> bool:
-    """Verify a server-issued session_id signature. Returns True if valid."""
+    """Verify a server-issued session_id signature.
+
+    Returns True only if the signature matches AND the embedded expiry has not
+    passed. Constant-time comparison is used for the signature check.
+    """
     if not signed_session or "." not in signed_session:
         return False
-    raw_session, _, signature = signed_session.rpartition(".")
-    if not raw_session or not signature:
+    raw_session, _, rest = signed_session.partition(".")
+    if not raw_session or "." not in rest:
         return False
-    expected = _sign_session_id(room_id, raw_session)
+    expires_str, _, signature = rest.partition(".")
+    if not expires_str or not signature:
+        return False
+    try:
+        expires_at = int(expires_str)
+    except ValueError:
+        return False
+    # Reject expired tokens before bothering with the HMAC check.
+    if expires_at <= int(datetime.now(timezone.utc).timestamp()):
+        return False
+    expected = _sign_session_id(room_id, raw_session, expires_at)
     # Use hmac.compare_digest for constant-time comparison.
     return hmac.compare_digest(expected, signed_session)
 
@@ -214,9 +238,14 @@ async def get_room(slug: str, request: Request):
             raise HTTPException(status_code=410, detail="房间已过期")
         response = _serialize_public_room(room)
     # Issue a signed session token so the client can join without being able
-    # to forge arbitrary session_ids to inflate the participant count.
+    # to forge arbitrary session_ids to inflate the participant count. The
+    # token embeds an expiry timestamp so a leaked token stops being usable
+    # after SESSION_TOKEN_TTL_SECONDS without server-side state.
     raw_session = uuid4().hex
-    response.session_token = _sign_session_id(room.id, raw_session)
+    expires_at = int(
+        (datetime.now(timezone.utc) + timedelta(seconds=SESSION_TOKEN_TTL_SECONDS)).timestamp()
+    )
+    response.session_token = _sign_session_id(room.id, raw_session, expires_at)
     return response
 
 
@@ -243,21 +272,28 @@ async def join_room(slug: str, body: RoomJoinRequest, request: Request):
             # attacker from rotating session_ids to bypass the participant cap.
             if not _verify_session_id(room.id, body.session_id):
                 raise HTTPException(status_code=400, detail="会话凭据无效")
-            existing_result = await session.execute(
-                select(RoomEntrySession).where(
-                    RoomEntrySession.room_id == room.id,
-                    RoomEntrySession.session_id == body.session_id,
+            # Atomic dedup: INSERT ... ON CONFLICT DO NOTHING against the
+            # uq_room_entry_session unique constraint. If the (room_id,
+            # session_id) row already exists, the insert is a no-op and we
+            # treat the join as a re-join (don't bump entry_count). This
+            # closes the SELECT-then-INSERT race where two concurrent joins
+            # with the same session_id would both pass the existence check
+            # and double-count the participant.
+            insert_stmt = (
+                pg_insert(RoomEntrySession)
+                .values(
+                    id=str(uuid4()),
+                    room_id=room.id,
+                    session_id=body.session_id,
                 )
+                .on_conflict_do_nothing(
+                    index_elements=["room_id", "session_id"],
+                )
+                .returning(RoomEntrySession.id)
             )
-            if existing_result.scalar_one_or_none() is None:
-                session.add(
-                    RoomEntrySession(
-                        id=str(uuid4()),
-                        room_id=room.id,
-                        session_id=body.session_id,
-                    )
-                )
-            else:
+            insert_result = await session.execute(insert_stmt)
+            if insert_result.first() is None:
+                # Conflict: session already present, do not count this join.
                 should_count = False
 
         if should_count:
@@ -293,6 +329,102 @@ async def join_room(slug: str, body: RoomJoinRequest, request: Request):
         await session.refresh(room)
 
         return _serialize_public_room(room)
+
+
+@router.post("/api/rooms/{slug}/leave")
+@limiter.limit("10/minute")
+async def leave_room(slug: str, body: RoomJoinRequest, request: Request):
+    """Decrement a room's entry_count when a participant leaves.
+
+    The caller must present the same signed session_id it used to join so the
+    server can guarantee entry_count is only decremented once per real
+    participant (and never below 0). Repeated leave calls for an already-left
+    session are idempotent: the session row is already gone, so the count is
+    not touched.
+    """
+    if not body.session_id:
+        raise HTTPException(status_code=400, detail="缺少会话凭据")
+
+    async with AsyncSessionLocal() as session:
+        room = await _get_room_by_slug(session, slug)
+        if room is None:
+            raise HTTPException(status_code=404, detail="房间不存在或已关闭")
+        if not _verify_session_id(room.id, body.session_id):
+            raise HTTPException(status_code=400, detail="会话凭据无效")
+
+        # Delete the session row first. Only if a row was actually removed
+        # do we decrement entry_count — this makes leave idempotent and
+        # prevents a client from draining the counter by calling leave
+        # repeatedly without ever joining.
+        delete_result = await session.execute(
+            delete(RoomEntrySession).where(
+                RoomEntrySession.room_id == room.id,
+                RoomEntrySession.session_id == body.session_id,
+            )
+        )
+        if delete_result.rowcount > 0:
+            # Atomic decrement with a floor at 0 so concurrent leaves or a
+            # missing join can never drive entry_count negative.
+            await session.execute(
+                Room.__table__.update()
+                .where(
+                    Room.id == room.id,
+                    Room.entry_count > 0,
+                )
+                .values(entry_count=Room.entry_count - 1)
+            )
+        room.last_activity_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(room)
+
+        return _serialize_public_room(room)
+
+
+@router.get("/api/rooms/{slug}/qrcode")
+@limiter.limit("30/minute")
+async def get_room_qrcode(slug: str, request: Request):
+    """Return a PNG QR code pointing at the room's frontend share URL.
+
+    The frontend uses hash-based routing, so the shareable URL is
+    ``<base>/#/room/<slug>``. ``<base>`` is the first configured CORS origin
+    (the canonical frontend URL in production) and falls back to the request's
+    own base URL when no origins are configured (e.g. local dev served from
+    the same origin).
+    """
+    async with AsyncSessionLocal() as session:
+        room = await _get_room_by_slug(session, slug)
+        if room is None:
+            raise HTTPException(status_code=404, detail="房间不存在或已关闭")
+        if room.expires_at and room.expires_at <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=410, detail="房间已过期")
+
+    try:
+        import qrcode
+    except ImportError:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "服务器未安装 qrcode 依赖，无法生成二维码。"},
+        )
+
+    if settings.cors_origins:
+        base_url = settings.cors_origins[0].rstrip("/")
+    else:
+        base_url = str(request.base_url).rstrip("/")
+    share_url = f"{base_url}/#/room/{slug}"
+
+    try:
+        img = qrcode.make(share_url)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+    except Exception as exc:
+        logger.warning("QR code generation failed for room %s: %s", slug, exc)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"二维码生成失败: {exc}"},
+        )
+
+    return Response(content=buf.getvalue(), media_type="image/png")
 
 
 @router.patch("/api/rooms/{room_id}", response_model=RoomResponse)

@@ -53,12 +53,29 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("Could not connect to Redis task queue: %s", exc)
 
-    # AI key health probing is handled by the ARQ worker's cron job
-    # (probe_keys_health_task, every 30s) which shares the same gateway pool.
-    # Running a second probe loop here would duplicate the probes and skew RTT
-    # statistics, so it is intentionally not started in the app process.
+    # Start the AI key health probe so the gateway can recover degraded /
+    # offline keys without waiting for a user request. The ARQ worker also
+    # runs a probe cron, but in environments without a worker (e.g. local
+    # dev, single-process deploys) this loop is the only way keys get
+    # re-checked. Wrapped in try/except so a missing event loop / other
+    # edge case never blocks app startup.
+    try:
+        from app.gateway import start_health_probe
+
+        start_health_probe()
+    except Exception as exc:
+        logger.warning("Could not start gateway health probe: %s", exc)
 
     yield
+
+    # Cancel the gateway health probe loop on shutdown so we don't leave a
+    # dangling asyncio task that would log errors after the app is gone.
+    try:
+        from app.gateway import stop_health_probe
+
+        stop_health_probe()
+    except Exception as exc:
+        logger.warning("Could not stop gateway health probe: %s", exc)
 
     if redis_pool is not None:
         await redis_pool.close()
@@ -124,7 +141,11 @@ async def security_headers(request: Request, call_next):
     ] = "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
     response.headers[
         "Content-Security-Policy"
-    ] = "default-src 'self'; frame-ancestors 'none'; connect-src 'self'; img-src 'self' data:; media-src 'self'; object-src 'none'; base-uri 'self';"
+    ] = (
+        "default-src 'self'; frame-ancestors 'none'; connect-src 'self'; "
+        "img-src 'self' data:; media-src 'self'; object-src 'none'; "
+        "base-uri 'self'; style-src 'self' 'unsafe-inline'"
+    )
     return response
 
 
@@ -232,3 +253,19 @@ app.mount(
     StaticFiles(directory=settings.upload_dir, check_dir=False),
     name="uploads",
 )
+
+
+if __name__ == "__main__":
+    # Read host/port from settings so deployment configs (env vars APP_HOST /
+    # APP_PORT) actually take effect when running ``python -m app.main``
+    # instead of ``uvicorn app.main:app``. The Dockerfile may invoke uvicorn
+    # directly with its own host/port; this block only governs the
+    # ``python -m app.main`` entry point.
+    import uvicorn
+
+    uvicorn.run(
+        "app.main:app",
+        host=settings.app_host,
+        port=settings.app_port,
+        reload=False,
+    )

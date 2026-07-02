@@ -12,6 +12,12 @@ from app.models.db import KnowledgeNode, VideoFrame
 
 logger = logging.getLogger(__name__)
 
+# Expected embedding dimension. The configured sentence-transformers model
+# (all-MiniLM-L6-v2) and the deterministic fallback both produce 384-dim
+# vectors; mismatched dimensions would make pgvector raise at query time, so
+# we validate up front and return empty results with a warning instead.
+EXPECTED_EMBEDDING_DIM = 384
+
 
 def _normalize_embedding(embedding: list[float] | str | None) -> list[float] | None:
     """Ensure embedding is a list of floats."""
@@ -106,6 +112,13 @@ async def search_similar_frames(
     """
     embedding = _normalize_embedding(query_embedding)
     if not embedding:
+        return []
+    if len(embedding) != EXPECTED_EMBEDDING_DIM:
+        logger.warning(
+            "Frame search rejected query embedding with dim %d (expected %d)",
+            len(embedding),
+            EXPECTED_EMBEDDING_DIM,
+        )
         return []
 
     sql = text(

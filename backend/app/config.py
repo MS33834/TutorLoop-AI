@@ -16,13 +16,19 @@ class Settings(BaseSettings):
     llm_models_raw: str = Field(default="", alias="LLM_MODELS")
 
     local_base_url: str = Field(default="http://localhost:8001/v1", alias="LOCAL_BASE_URL")
-    local_model: str = Field(default="qwen3.5-4b", alias="LOCAL_MODEL")
+    local_model: str = Field(default="qwen2.5-3b", alias="LOCAL_MODEL")
 
     app_host: str = Field(default="0.0.0.0", alias="APP_HOST")
     app_port: int = Field(default=8000, alias="APP_PORT")
 
     secret_key: str = Field(default="change-me-in-production", alias="SECRET_KEY")
     access_token_expire_minutes: int = Field(default=30, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
+
+    # When True, the refresh-token cookie is always sent with Secure. Useful
+    # for production deployments that terminate TLS outside the app (so the
+    # request scheme seen by the app is still HTTP). Defaults to False so local
+    # dev over HTTP keeps working; override with COOKIE_SECURE=true in prod.
+    cookie_secure: bool = Field(default=False, alias="COOKIE_SECURE")
 
     @field_validator("secret_key")
     @classmethod

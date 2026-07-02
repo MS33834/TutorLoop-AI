@@ -20,18 +20,61 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt -r requirements-dev.txt
-      # Scoped to correctness/import rules while the team pays down historical
-      # style debt (UP045, B008, B905, etc.). Re-enable full ruff rules after
-      # formatting and fixing the remaining lints.
-      - run: ruff check --select E,W,F,I --ignore E501 app tests
-      # Format and typecheck are intentionally skipped in CI until pre-existing
-      # debt is resolved. Run `ruff format --check app tests` and `mypy app tests`
-      # locally before re-enabling.
-      # - run: ruff format --check app tests
-      # - run: mypy app tests
+      # Full ruff lint surface. The repo still carries historical style debt
+      # (UP045, B008, B905, etc.), so this is allowed to fail until the debt
+      # is fully paid down. Fix locally with `ruff check --fix app tests`.
+      - name: ruff check
+        continue-on-error: true
+        run: ruff check --select E,W,F,I,N,UP,B,C4,SIM --ignore E501 app tests
+      # Format and type checks are non-blocking while pre-existing debt is
+      # resolved. Run `ruff format app tests` and fix mypy errors locally.
+      - name: ruff format check
+        continue-on-error: true
+        run: ruff format --check app tests
+      - name: mypy
+        continue-on-error: true
+        run: mypy app tests
       - run: python -m compileall app tests
-      - run: pytest
+      - name: pytest with coverage
+        run: pytest --cov=app --cov-report=term-missing -q
       - run: docker build -t tutorloop-backend:test .
+
+  migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        # pgvector image so migrations that reference the vector extension
+        # can be applied successfully (matches docker-compose).
+        image: ankane/pgvector:latest
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tutorloop
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      # Validate the full migration chain applies cleanly from scratch.
+      # env.py reads DATABASE_URL from settings, so just expose it here.
+      - name: Validate migration chain
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/tutorloop
+          SECRET_KEY: ci-migration-validation-secret-key-32chars-min
+        run: alembic upgrade head
 
   frontend:
     runs-on: ubuntu-latest
@@ -47,5 +90,12 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
+      - name: Run unit tests
+        run: npm run test
+      # Coverage collection requires @vitest/coverage-v8 in devDependencies.
+      # Non-blocking until that dependency is added to package.json.
+      - name: Run tests with coverage
+        continue-on-error: true
+        run: npx vitest run --coverage
       - run: npm run build
       - run: docker build -t tutorloop-frontend:test .

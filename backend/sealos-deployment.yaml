@@ -95,6 +95,11 @@ spec:
                   key: VLM_API_KEY
             - name: UPLOAD_DIR
               value: /app/uploads
+            # Migrations: each backend replica runs `alembic upgrade head` on
+            # startup. With replicas > 1 this races — two pods may apply the
+            # same migration concurrently and one will fail. Prefer running
+            # migrations once in a pre-deploy Job (or set replicas: 1 for the
+            # rollout) and keep RUN_ALEMBIC_MIGRATIONS=false on the web pods.
             - name: RUN_ALEMBIC_MIGRATIONS
               value: "true"
           resources:
@@ -222,6 +227,18 @@ spec:
           volumeMounts:
             - name: uploads
               mountPath: /app/uploads
+          # The worker runs arq (not an HTTP server), so use an exec probe that
+          # verifies the arq process is still the container's PID 1. If the
+          # process hangs without exiting, Kubernetes will restart the pod.
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "grep -qa arq /proc/1/cmdline"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
           resources:
             requests:
               cpu: 100m

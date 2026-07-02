@@ -21,4 +21,7 @@ COPY --chown=appuser:appuser . .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Honour APP_HOST/APP_PORT (read by app.config.Settings) so deployers can
+# override the bind address/port without rebuilding the image. Falls back to
+# 0.0.0.0:8000 to match the documented defaults.
+CMD ["sh", "-c", "uvicorn app.main:app --host ${APP_HOST:-0.0.0.0} --port ${APP_PORT:-8000}"]
