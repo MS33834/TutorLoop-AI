@@ -274,7 +274,12 @@ class RoomEntrySession(Base):
     room_id: Mapped[str] = mapped_column(
         ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
     )
-    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Stores the FULL server-signed session token
+    # (``raw_session.expires_at.signature`` ≈ 108 chars), not just the raw
+    # uuid, so the unique constraint dedups on the signed token. String(256)
+    # matches schemas.RoomJoinRequest.session_id max_length and leaves
+    # headroom for longer signature algorithms.
+    session_id: Mapped[str] = mapped_column(String(256), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 

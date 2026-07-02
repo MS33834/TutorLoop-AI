@@ -145,7 +145,11 @@ class RoomPublicResponse(BaseModel):
 
 class RoomJoinRequest(BaseModel):
     password: Optional[str] = Field(None, max_length=64)
-    session_id: Optional[str] = Field(None, max_length=64)
+    # session_id carries the server-signed session token issued by
+    # GET /api/rooms/{slug} (format ``raw_session.expires_at.signature`` ≈
+    # 108 chars). 64 was too short and made Pydantic reject valid tokens
+    # with string_too_long. 256 leaves ample headroom for future sig algos.
+    session_id: Optional[str] = Field(None, max_length=256)
 
 
 class KnowledgeNodeCreate(BaseModel):
