@@ -228,19 +228,29 @@
 ## Sprint 1.4：CI E2E 事件循环修复（Sprint 1 二次展开）
 
 > **背景**：Sprint 1 的 10 个 E2E 测试在本地（无 PG）全部 skip 通过，但 CI（有 pgvector service）下 10 个全 error。
-> **错误现象**（commit 27ff20e CI 日志）：
-> - `RuntimeError: Task ... got Future <Future pending> attached to a different loop`（10 个中的 5 个）
-> - `ValueError: password cannot be longer than 72 bytes`（10 个中的 5 个，bcrypt cascade）
-> - 最终：`164 passed, 1 warning, 10 errors in 21.03s`
+> **错误现象**（commit 27ff20e / cc0e9e4 CI 日志）：
+> - `RuntimeError: Task ... got Future <Future pending> attached to a different loop`（5 个测试）
+> - `ValueError: password cannot be longer than 72 bytes`（5 个测试）
+> - 最终：`164 passed, 1 warning, 10 errors in 20.49s`
 >
-> **根因分析**（架构师 + BE + DevOps 联合定位）：
-> 1. `conftest.py` 的 `setup_db` 是 `scope="session"` + `autouse=True`，内部用 `asyncio.run(_create())` 在**独立的临时 event loop** 中执行 `engine.begin()` + `Base.metadata.create_all` + `engine.dispose()`。
-> 2. `app.db.postgres.engine` / `AsyncSessionLocal` 是 **module-level 单例**，被 setup_db 与测试共用。即使 `engine.dispose()` 释放了连接，asyncpg 的 `Protocol` 对象内部 Future 仍绑定到 setup loop；且 `pool_pre_ping=True` 在测试 loop 中复用残留连接适配器时触发跨 loop 错误。
-> 3. bcrypt 的 `ValueError` 是 **cascade**：event loop 损坏导致 passlib threadpool 调用拿到错误的 password buffer（密码 "Test1234!" 仅 9 字节，正常不会触发 72 字节限制）。
-> 4. **结论**：两个错误同根同源，修复事件循环隔离即可同时消除。
+> **根因分析**（架构师 + BE + DevOps 联合定位，经 commit cc0e9e4 验证后修订）：
+> 经 cc0e9e4（setup_db 临时 engine 隔离）推送后 CI 仍失败，错误分布与之前完全一致，证明是**两个独立根因**，而非单一 cascade：
+>
+> 1. **bcrypt 兼容性 bug**（test_register_login_me 等 5 个，第一个测试就触发）：
+>    - 环境：passlib 1.7.4 + bcrypt 5.0.0（CI 用 bcrypt>=4.1.0）
+>    - bcrypt 4.0 移除了 `__about__` 模块，passlib 1.7.4 依赖它做版本检测，导致 bcrypt backend 加载异常
+>    - 表现：对 9 字节的 "Test1234!" 误报 `password cannot be longer than 72 bytes`
+>    - 证据：`test_auth_service.py` 早有 `_working_hasher` fixture 用 pbkdf2_sha256 绕过此 bug（仅单元测试），但生产代码 `auth_service.py` 仍用 passlib+bcrypt，E2E 真正调用 register 时触发
+> 2. **跨 event loop 连接复用**（test_create_course 等 5 个，第二个及之后的测试）：
+>    - pytest-asyncio 默认 function-scoped loop，每个测试一个新 loop
+>    - `app.db.postgres.engine` 是 module-level 单例，测试1的连接留在池里绑定 loop1
+>    - 测试2在 loop2 中复用时，asyncpg Protocol 的 Future 跨 loop → RuntimeError
+>    - cc0e9e4 的临时 engine 修复只解决了 setup_db 阶段的污染，未解决测试间的跨 loop
+> 3. **结论**：bcrypt 修复让第一个测试通过，session-scoped loop 修复让后续测试不再跨 loop，两者缺一不可。
 
 ### S1.4.1 修复方案设计（架构师 + BE）
 
+**根因 A：setup_db 污染全局 engine（cc0e9e4 已修）**
 - [x] S1.4.1.1 确认 `setup_db` 必须保持 session-scoped（避免每测试重建表拖慢 CI）
 - [x] S1.4.1.2 确认不能让 setup_db 与测试共用 `app.db.postgres.engine`（单例污染根因）
 - [x] S1.4.1.3 方案选定：**setup_db 使用独立的临时 engine 创建/销毁表**，完全不触碰测试用的全局 `engine`
@@ -248,6 +258,20 @@
   - 测试用的全局 `engine` 连接池从未被 setup loop 触碰，测试时在自己的 function-scoped loop 中首次连接，无跨 loop 残留
 - [x] S1.4.1.4 确认 `pg_available` probe 已用独立 `asyncpg.connect`（不复用 engine），无需改动
 - [x] S1.4.1.5 确认 `mock_gateway` / `disable_limiter` / `async_client` / `auth_token` / `auth_headers` 均在测试 loop 中运行，无需改动
+
+**根因 B：passlib + bcrypt 版本不兼容（e957fbb 修复）**
+- [x] S1.4.1.6 确认 passlib 1.7.4 + bcrypt 5.0.0 不兼容（bcrypt 4.0+ 移除 `__about__`）
+- [x] S1.4.1.7 方案选定：**直接用 bcrypt 库的 `hashpw`/`checkpw`**，绕过 passlib 的版本检测
+  - 生成的 `$2b$` hash 与 passlib 互相兼容，已有用户密码 hash 无需迁移
+  - `verify_password` 捕获 `ValueError`/`TypeError` 返回 False（无效 hash 格式）
+- [x] S1.4.1.8 确认 `test_auth_service.py` 的 `_working_hasher` workaround 可移除（不再需要 passlib）
+
+**根因 C：测试间跨 event loop（e957fbb 修复）**
+- [x] S1.4.1.9 确认 pytest-asyncio 默认 function-scoped loop 导致测试间连接跨 loop
+- [x] S1.4.1.10 方案选定：**设置 `asyncio_default_fixture_loop_scope = "session"` + `asyncio_default_test_loop_scope = "session"`**
+  - 所有测试和 async fixture 共享一个 session loop，engine 连接始终在同一 loop
+  - 对 164 个原有测试无影响（不依赖 loop 隔离）
+- [x] S1.4.1.11 确认 session loop 下 `async_client`（function-scoped async fixture）仍正常工作（每次创建新 client，loop 同一个）
 
 ### S1.4.2 conftest.py 修复实现（BE）
 
@@ -260,6 +284,27 @@
 - [x] S1.4.2.5 保留 `asyncio.run(_create())` / `asyncio.run(_drop())` 结构（setup loop 与测试 loop 隔离正是我们要的）
 - [x] S1.4.2.6 删除旧注释中"Dispose so no pooled connection is tied to this transient event loop"的误导性说明（原方案 dispose 的是全局 engine，无效）
 - [x] S1.4.2.7 新增注释明确说明：临时 engine 与全局 `app.db.postgres.engine` 完全隔离，测试 engine 的连接池在测试 loop 中首次创建，无跨 loop 问题
+
+### S1.4.2b auth_service.py bcrypt 兼容性修复（BE）
+
+**文件**：`backend/app/services/auth_service.py`（修改）+ `backend/tests/test_auth_service.py`（修改）
+
+- [x] S1.4.2b.1 移除 `from passlib.context import CryptContext` 和 `pwd_context = CryptContext(...)` 单例
+- [x] S1.4.2b.2 改为 `import bcrypt`，`verify_password` 用 `bcrypt.checkpw(plain.encode, hashed.encode)`
+  - 捕获 `ValueError`/`TypeError` 返回 False（兼容无效 hash 格式）
+- [x] S1.4.2b.3 `get_password_hash` 用 `bcrypt.hashpw(password.encode, bcrypt.gensalt()).decode`
+- [x] S1.4.2b.4 移除 `test_auth_service.py` 的 `_working_hasher` fixture 和 `from passlib.context import CryptContext`
+- [x] S1.4.2b.5 确认 `$2b$` hash 格式与 passlib 互相兼容（已有用户密码 hash 无需迁移）
+- [x] S1.4.2b.6 确认 `rooms.py` 用 `from auth_service import verify_password`，无需改动（接口签名不变）
+
+### S1.4.2c pyproject.toml session-scoped loop 修复（BE + DevOps）
+
+**文件**：`backend/pyproject.toml`（修改 `[tool.pytest.ini_options]`）
+
+- [x] S1.4.2c.1 新增 `asyncio_default_fixture_loop_scope = "session"`
+- [x] S1.4.2c.2 新增 `asyncio_default_test_loop_scope = "session"`
+- [x] S1.4.2c.3 添加注释说明：session loop 避免测试间连接跨 loop
+- [x] S1.4.2c.4 本地验证 164 passed + 10 skipped 无回归（session loop 不影响原有测试）
 
 ### S1.4.3 本地验证（QA + DevOps）
 
