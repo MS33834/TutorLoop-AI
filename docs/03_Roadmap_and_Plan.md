@@ -74,9 +74,9 @@
 | 后端单元测试 | `cd backend && pytest -q` | 164 passed / 0 failed |
 | 前端单元测试 | `cd frontend && npm run test` | 21 passed / 0 failed |
 | 前端构建 | `cd frontend && npm run build` | 通过（PWA generateSW） |
-| 数据库迁移链 | `alembic upgrade head` | 11 个迁移，链连续无断裂 |
+| 数据库迁移链 | `alembic upgrade head` | squash 为 1 个迁移（create_all 完整 schema），链连续无断裂 |
 | 前端安全审计 | `cd frontend && npm audit` | 0 vulnerabilities |
-| GitHub CI | 3 jobs (backend/migrations/frontend) | 修复 migrations job（op.run_sync → op.get_bind） |
+| GitHub CI | 3 jobs (backend/migrations/frontend) | 修复 migrations job：squash 迁移链解决 create_all 与 ADD COLUMN 冲突 |
 | GitHub PR/Issue | 0 PR / 0 Issue | 无待处理项 |
 | 仓库分支 | 仅 main | 无额外分支 |
 
@@ -239,7 +239,7 @@
 | --- | --- | --- | --- | --- |
 | TD-01 | 后端 API 层集成测试覆盖为零（无 TestClient） | 高 | Phase 4 | [ ] |
 | TD-02 | 前端组件/视图测试覆盖为零（9 视图 + 4 组件） | 高 | Phase 4 | [ ] |
-| TD-03 | 初始 alembic 迁移用 `Base.metadata.create_all` 而非显式 DDL | 中 | Phase 5 | [ ] |
+| TD-03 | 初始 alembic 迁移用 `Base.metadata.create_all` 而非显式 DDL（已 squash 10 个冲突迁移，CI 已绿） | 中 | Phase 5 | [~] 部分修复 |
 | TD-04 | `sentence-transformers` 依赖可能增大镜像体积，需考虑轻量替代 | 中 | Phase 5 | [ ] |
 | TD-05 | `pyproject.toml` 无 `[project.dependencies]`，依赖仅在 requirements.txt | 低 | Phase 5 | [ ] |
 | TD-06 | Neo4j 与 Postgres 主键不一致（LLM 短 ID vs UUID） | 中 | Phase 6 | [ ] |

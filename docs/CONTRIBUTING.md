@@ -242,7 +242,7 @@ docker compose up -d
 1. 查看 https://github.com/MS33834/tutorloop-ai/actions 找到失败的 job
 2. 点击进入查看详细日志
 3. 常见问题：
-   - **migrations job 失败**：检查迁移文件是否使用了 `op.run_sync`（不存在），改用 `op.get_bind()` + `Base.metadata.create_all(bind)`
+   - **migrations job 失败**：检查迁移文件是否使用了 `op.run_sync`（不存在），改用 `op.get_bind()` + `Base.metadata.create_all(bind)`；若报 `column already exists` / `relation already exists`，说明初始迁移用 `create_all` 已创建完整 schema，后续 `ADD COLUMN`/`CREATE TABLE` 迁移与之冲突——项目未上线时应 squash 为单一初始迁移（删除冗余迁移文件）
    - **backend job 失败**：检查测试是否通过、依赖是否完整
    - **frontend job 失败**：检查 `npm run test` 和 `npm run build`
 

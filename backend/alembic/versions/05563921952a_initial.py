@@ -1,9 +1,22 @@
-"""initial
+"""initial (squashed)
 
 Revision ID: 05563921952a
 Revises:
 Create Date: 2026-06-22 08:15:59.974306
 
+Squashed on 2026-07-02: the 10 incremental migrations that followed this
+one (add_video_status, add_user_is_active, add_rooms_table, ...) were all
+redundant because this migration uses Base.metadata.create_all(), which
+creates the *current* full schema in one shot. The incremental migrations
+then tried to ADD COLUMN / CREATE TABLE for objects that already existed,
+failing with "column already exists" / "relation already exists".
+
+Since the project has not shipped to production (no data to preserve), the
+clean fix is to keep this single create_all migration as the only revision.
+This also resolves the immediate CI migrations-job failure.
+
+Tech debt TD-03 (rewrite as explicit op.create_table DDL) remains open and
+is tracked for Phase 5.
 """
 from typing import Sequence, Union
 
