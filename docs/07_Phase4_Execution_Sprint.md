@@ -44,15 +44,16 @@
 ### S0.2 CI 全绿确认（DevOps）
 - [x] S0.2.1 修复 `op.run_sync` 不存在 → 改用 `op.get_bind()`（commit 77906ea）
 - [x] S0.2.2 修复迁移链冲突 → squash 10 个冗余迁移为单一初始迁移（commit 5bb830f）
-- [ ] S0.2.3 推送后 CI 三 job 全绿（backend / migrations / frontend）
+- [x] S0.2.3 推送后 CI 三 job 全绿（backend / migrations / frontend）
   - 验证命令：`curl -s -H "Authorization: token <TOKEN>" "https://api.github.com/repos/MS33834/tutorloop-ai/actions/runs?per_page=1" | python -c "import sys,json; r=json.load(sys.stdin)['workflow_runs'][0]; print(r['conclusion'])"`
   - 预期输出：`success`
-- [ ] S0.2.4 若仍有失败，定位失败 job 与 step，修复后重新提交推送，直到全绿
+  - 实际结果：commit 5bb830f / 43b42ba CI 全绿 ✓
+- [x] S0.2.4 若仍有失败，定位失败 job 与 step，修复后重新提交推送，直到全绿
 
 ### S0.3 本地基线测试（QA）
 - [x] S0.3.1 `cd backend && pytest -q` → 164 passed / 0 failed
-- [ ] S0.3.2 `cd frontend && npm run test` → 0 failed（需在 Node 环境验证）
-- [ ] S0.3.3 `cd frontend && npm run build` → 构建成功
+- [x] S0.3.2 `cd frontend && npm run test` → 0 failed（CI frontend job 验证通过）
+- [x] S0.3.3 `cd frontend && npm run build` → 构建成功（CI frontend job 验证通过）
 
 ---
 
@@ -212,13 +213,13 @@
 
 ### S1.3 Sprint 1 审查（全部角色）
 
-- [ ] 架构师：mock 位置正确（patch 引用绑定点）、fixture 不污染其他测试
-- [ ] PM：覆盖核心学习闭环（注册→课程→视频→提问→报告）
-- [ ] BE：异常路径有测试（401 未授权、404 不存在、422 参数错误）
-- [ ] FE：无需（纯后端）
-- [ ] AI 算法：LLM mock 返回结构符合 gateway 契约
-- [ ] DevOps：CI 中可运行（PG service 已配置）
-- [ ] QA：断言充分，边界条件覆盖
+- [x] 架构师：mock 位置正确（patch 引用绑定点）、fixture 不污染其他测试
+- [x] PM：覆盖核心学习闭环（注册→课程→视频→提问→报告）
+- [x] BE：异常路径有测试（401 未授权、404 不存在、422 参数错误）
+- [x] FE：无需（纯后端）
+- [x] AI 算法：LLM mock 返回结构符合 gateway 契约
+- [x] DevOps：CI 中可运行（backend job 已加 pgvector service）
+- [x] QA：断言充分，边界条件覆盖
 
 ---
 
@@ -469,8 +470,8 @@
 
 | Sprint | 架构师 | PM | BE | FE | AI算法 | DevOps | QA |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| S0 基线 | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| S1 E2E测试 | ☐ | ☐ | ☐ | — | ☐ | ☐ | ☐ |
+| S0 基线 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| S1 E2E测试 | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ |
 | S2 性能压测 | ☐ | ☐ | ☐ | — | — | ☐ | ☐ |
 | S3 Redis缓存 | ☐ | ☐ | ☐ | — | ☐ | ☐ | ☐ |
 | S4 模型路由 | ☐ | ☐ | ☐ | — | ☐ | — | ☐ |

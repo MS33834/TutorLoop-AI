@@ -71,7 +71,7 @@
 
 | 检查项 | 命令 | 当前状态 |
 | --- | --- | --- |
-| 后端单元测试 | `cd backend && pytest -q` | 164 passed / 0 failed |
+| 后端单元测试 | `cd backend && pytest -q` | 164 passed + 10 E2E（CI 中 PG 可用时运行） |
 | 前端单元测试 | `cd frontend && npm run test` | 21 passed / 0 failed |
 | 前端构建 | `cd frontend && npm run build` | 通过（PWA generateSW） |
 | 数据库迁移链 | `alembic upgrade head` | squash 为 1 个迁移（create_all 完整 schema），链连续无断裂 |
@@ -237,7 +237,7 @@
 
 | 编号 | 债务描述 | 优先级 | 计划阶段 | 状态 |
 | --- | --- | --- | --- | --- |
-| TD-01 | 后端 API 层集成测试覆盖为零（无 TestClient） | 高 | Phase 4 | [ ] |
+| TD-01 | 后端 API 层集成测试覆盖为零（无 TestClient） | 高 | Phase 4 | [x] 已修复 |
 | TD-02 | 前端组件/视图测试覆盖为零（9 视图 + 4 组件） | 高 | Phase 4 | [ ] |
 | TD-03 | 初始 alembic 迁移用 `Base.metadata.create_all` 而非显式 DDL（已 squash 10 个冲突迁移，CI 已绿） | 中 | Phase 5 | [~] 部分修复 |
 | TD-04 | `sentence-transformers` 依赖可能增大镜像体积，需考虑轻量替代 | 中 | Phase 5 | [ ] |

@@ -10,9 +10,31 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      # pgvector so the E2E tests (tests/test_e2e_flow.py) can actually run
+      # against a real Postgres+vector instead of being skipped.
+      postgres:
+        image: ankane/pgvector:latest
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tutorloop
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     defaults:
       run:
         working-directory: backend
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/tutorloop
+      SECRET_KEY: ci-backend-test-secret-key-32chars-min
+      LLM_API_KEYS: sk-test
+      LLM_BASE_URLS: http://localhost:8000/v1
+      LLM_MODELS: test-model
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
