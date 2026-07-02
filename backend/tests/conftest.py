@@ -78,6 +78,12 @@ def setup_db(pg_available: bool):
 
     async def _create():
         async with engine.begin() as conn:
+            # pgvector extension must exist before any table with VECTOR
+            # columns can be created. The migrations job creates it via
+            # alembic, but this fixture uses Base.metadata.create_all directly.
+            from sqlalchemy import text
+
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             await conn.run_sync(Base.metadata.create_all)
         # Dispose so no pooled connection is tied to this transient event loop;
         # tests will create fresh connections in their own loop.
