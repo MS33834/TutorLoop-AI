@@ -4,11 +4,9 @@ Covers password hashing/verification and JWT access token creation without
 requiring a running database. The async ``get_current_user`` dependency (which
 needs a DB session) is intentionally excluded.
 
-Note: this environment ships passlib 1.7.4 alongside bcrypt 5.x, which are
-incompatible (passlib's wrap-bug detection raises ``ValueError``). When the
-bcrypt backend fails to load, the ``_working_hasher`` fixture substitutes a
-working passlib scheme so the hash/verify round-trip logic is still exercised.
-In an environment with a compatible bcrypt, the real backend is used as-is.
+Password hashing uses the ``bcrypt`` library directly (not passlib), because
+passlib 1.7.4 is incompatible with bcrypt>=4.0 — see auth_service.py for
+details.
 """
 
 from datetime import UTC, datetime
@@ -16,10 +14,8 @@ from datetime import UTC, datetime
 import jwt
 import pytest
 from fastapi import HTTPException
-from passlib.context import CryptContext
 
 from app.config import settings
-from app.services import auth_service
 from app.services.auth_service import (
     ACCESS_TOKEN_TYPE,
     ALGORITHM,
@@ -33,19 +29,6 @@ from app.services.auth_service import (
 )
 
 PASSWORD = "Sup3rSecret!"
-
-
-@pytest.fixture(autouse=True)
-def _working_hasher(monkeypatch):
-    """Ensure ``pwd_context`` can actually hash/verify during the test."""
-    try:
-        auth_service.pwd_context.hash("probe-password")
-    except Exception:
-        monkeypatch.setattr(
-            auth_service,
-            "pwd_context",
-            CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto"),
-        )
 
 
 def test_verify_password_correct_returns_true():

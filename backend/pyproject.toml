@@ -40,4 +40,12 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
 asyncio_mode = "auto"
+# Session-scoped event loop for BOTH fixtures and tests. The E2E tests share
+# the module-level ``app.db.postgres.engine`` singleton; with the default
+# function-scoped loop, connections pooled during one test remained bound to
+# that test's closed loop and surfaced as
+# "Task got Future attached to a different loop" in the next test. A single
+# session loop keeps every pooled connection on the same loop. (Sprint 1.4 fix)
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 pythonpath = ["."]

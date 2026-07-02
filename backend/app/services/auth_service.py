@@ -4,10 +4,10 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Optional
 
+import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from passlib.context import CryptContext
 from sqlalchemy import select
 
 from app.config import settings
@@ -15,7 +15,6 @@ from app.db.postgres import AsyncSessionLocal
 from app.models.db import User
 
 logger = logging.getLogger(__name__)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer(auto_error=False)
 
 ALGORITHM = "HS256"
@@ -25,11 +24,35 @@ REFRESH_TOKEN_EXPIRE_DAYS = 30
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verify a plaintext password against a stored bcrypt hash.
+
+    Uses the ``bcrypt`` library directly instead of passlib: passlib 1.7.4 is
+    incompatible with bcrypt>=4.0 (bcrypt removed ``__about__`` which passlib
+    uses for version detection), causing spurious
+    ``ValueError: password cannot be longer than 72 bytes`` errors even for
+    short passwords. ``bcrypt.checkpw`` produces/consumes the same standard
+    ``$2b$`` hashes, so existing passlib-hashed passwords remain verifiable.
+    """
+    try:
+        return bcrypt.checkpw(
+            plain_password.encode("utf-8"),
+            hashed_password.encode("utf-8"),
+        )
+    except (ValueError, TypeError):
+        return False
 
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    """Hash a password using bcrypt with a fresh random salt.
+
+    Returns a ``$2b$`` hash string. bcrypt silently truncates inputs longer
+    than 72 bytes; callers should enforce a reasonable max length upstream
+    if they want to surface that to users.
+    """
+    return bcrypt.hashpw(
+        password.encode("utf-8"),
+        bcrypt.gensalt(),
+    ).decode("utf-8")
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
