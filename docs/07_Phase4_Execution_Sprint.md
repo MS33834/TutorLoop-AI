@@ -221,6 +221,74 @@
 - [x] DevOps：CI 中可运行（backend job 已加 pgvector service）
 - [x] QA：断言充分，边界条件覆盖
 
+> ⚠️ **修订说明（2026-07-02）**：S1.3 表面审查通过，但 commit `5a22315`/`31c92ad`/`27ff20e` 推送后 CI backend job 持续失败（migrations/frontend 已绿）。根因是 `setup_db` fixture 的事件循环隔离不彻底，导致 E2E 测试在 CI 中全部 error。S1.4 是在 Sprint 1 基础上的**二次展开**，专门修复此 CI 阻塞。S1.3 的 ✓ 保留（审查维度本身无误），但 Sprint 1 整体完成状态以 S1.4 全绿为准。
+
+---
+
+## Sprint 1.4：CI E2E 事件循环修复（Sprint 1 二次展开）
+
+> **背景**：Sprint 1 的 10 个 E2E 测试在本地（无 PG）全部 skip 通过，但 CI（有 pgvector service）下 10 个全 error。
+> **错误现象**（commit 27ff20e CI 日志）：
+> - `RuntimeError: Task ... got Future <Future pending> attached to a different loop`（10 个中的 5 个）
+> - `ValueError: password cannot be longer than 72 bytes`（10 个中的 5 个，bcrypt cascade）
+> - 最终：`164 passed, 1 warning, 10 errors in 21.03s`
+>
+> **根因分析**（架构师 + BE + DevOps 联合定位）：
+> 1. `conftest.py` 的 `setup_db` 是 `scope="session"` + `autouse=True`，内部用 `asyncio.run(_create())` 在**独立的临时 event loop** 中执行 `engine.begin()` + `Base.metadata.create_all` + `engine.dispose()`。
+> 2. `app.db.postgres.engine` / `AsyncSessionLocal` 是 **module-level 单例**，被 setup_db 与测试共用。即使 `engine.dispose()` 释放了连接，asyncpg 的 `Protocol` 对象内部 Future 仍绑定到 setup loop；且 `pool_pre_ping=True` 在测试 loop 中复用残留连接适配器时触发跨 loop 错误。
+> 3. bcrypt 的 `ValueError` 是 **cascade**：event loop 损坏导致 passlib threadpool 调用拿到错误的 password buffer（密码 "Test1234!" 仅 9 字节，正常不会触发 72 字节限制）。
+> 4. **结论**：两个错误同根同源，修复事件循环隔离即可同时消除。
+
+### S1.4.1 修复方案设计（架构师 + BE）
+
+- [x] S1.4.1.1 确认 `setup_db` 必须保持 session-scoped（避免每测试重建表拖慢 CI）
+- [x] S1.4.1.2 确认不能让 setup_db 与测试共用 `app.db.postgres.engine`（单例污染根因）
+- [x] S1.4.1.3 方案选定：**setup_db 使用独立的临时 engine 创建/销毁表**，完全不触碰测试用的全局 `engine`
+  - 临时 engine 在 setup loop 中创建连接、建表、dispose，连接随 loop 关闭而销毁
+  - 测试用的全局 `engine` 连接池从未被 setup loop 触碰，测试时在自己的 function-scoped loop 中首次连接，无跨 loop 残留
+- [x] S1.4.1.4 确认 `pg_available` probe 已用独立 `asyncpg.connect`（不复用 engine），无需改动
+- [x] S1.4.1.5 确认 `mock_gateway` / `disable_limiter` / `async_client` / `auth_token` / `auth_headers` 均在测试 loop 中运行，无需改动
+
+### S1.4.2 conftest.py 修复实现（BE）
+
+**文件**：`backend/tests/conftest.py`（修改 `setup_db` fixture）
+
+- [x] S1.4.2.1 在 `setup_db` 内部新建 `tmp_engine = create_async_engine(settings.database_url, future=True)`，**不导入** `app.db.postgres.engine`
+- [x] S1.4.2.2 将 `_create()` 改为使用 `tmp_engine.begin()` 执行 `CREATE EXTENSION IF NOT EXISTS vector` + `Base.metadata.create_all`
+- [x] S1.4.2.3 `_create()` 末尾 `await tmp_engine.dispose()`（释放临时连接）
+- [x] S1.4.2.4 将 `_drop()` 同样使用一个新的 `tmp_engine`（前一个已 dispose），执行 `Base.metadata.drop_all` 后 dispose
+- [x] S1.4.2.5 保留 `asyncio.run(_create())` / `asyncio.run(_drop())` 结构（setup loop 与测试 loop 隔离正是我们要的）
+- [x] S1.4.2.6 删除旧注释中"Dispose so no pooled connection is tied to this transient event loop"的误导性说明（原方案 dispose 的是全局 engine，无效）
+- [x] S1.4.2.7 新增注释明确说明：临时 engine 与全局 `app.db.postgres.engine` 完全隔离，测试 engine 的连接池在测试 loop 中首次创建，无跨 loop 问题
+
+### S1.4.3 本地验证（QA + DevOps）
+
+- [x] S1.4.3.1 本地无 PG 时 `cd backend && pytest tests/test_e2e_flow.py -v` → 10 skipped（验证 fixture 不报错）
+- [x] S1.4.3.2 本地无 PG 时 `cd backend && pytest -q` → 164 passed（验证无回归）
+- [x] S1.4.3.3 代码静态检查 `python -m compileall app tests` 通过
+
+### S1.4.4 CI 验证（DevOps）
+
+- [ ] S1.4.4.1 提交修复，推送 origin（GitHub）
+- [ ] S1.4.4.2 等待 CI 运行完成（约 2-4 分钟），查询最新 run：
+  - 命令：`curl -s -H "Authorization: token <TOKEN>" "https://api.github.com/repos/MS33834/tutorloop-ai/actions/runs?per_page=1" | python -c "import sys,json; r=json.load(sys.stdin)['workflow_runs'][0]; print(r['conclusion'])"`
+  - 预期：`success`
+- [ ] S1.4.4.3 若 backend job 仍失败，拉取 job 日志定位：
+  - 命令：`curl -sL -H "Authorization: token <TOKEN>" "<jobs_url>" -o /tmp/log.txt && grep -nE "(ERROR|RuntimeError|ValueError|passed|failed)" /tmp/log.txt | tail -40`
+  - 预期：`174 passed`（164 原有 + 10 E2E），0 errors
+- [ ] S1.4.4.4 确认三个 job 全绿：backend / migrations / frontend
+- [ ] S1.4.4.5 同步推送 gitcode（GitCode）
+
+### S1.4.5 Sprint 1.4 审查（全部角色）
+
+- [ ] 架构师：临时 engine 隔离彻底、无单例污染、方案可维护
+- [ ] PM：修复不影响功能交付、E2E 覆盖核心闭环
+- [ ] BE：根因诊断准确、修复最小化、无新引入风险
+- [ ] FE：无需（纯后端 CI 修复）
+- [ ] AI 算法：无需（不涉及模型层）
+- [ ] DevOps：CI 复现可验证、日志排查命令可用
+- [ ] QA：本地 + CI 双重验证、无回归
+
 ---
 
 ## Sprint 2：性能压测脚本（任务 4.3 展开）
@@ -472,8 +540,9 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | S0 基线 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | S1 E2E测试 | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ |
+| S1.4 CI修复 | ☐ | ☐ | ☐ | — | — | ☐ | ☐ |
 | S2 性能压测 | ☐ | ☐ | ☐ | — | — | ☐ | ☐ |
-| S3 Redis缓存 | ☐ | ☐ | ☐ | — | ☐ | ☐ | ☐ |
+| S3 Redis缓存 | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ |
 | S4 模型路由 | ☐ | ☐ | ☐ | — | ☐ | — | ☐ |
 | S5 前端E2E | ☐ | ☐ | — | ☐ | — | ☐ | ☐ |
 | S6 Docker+移动端 | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |

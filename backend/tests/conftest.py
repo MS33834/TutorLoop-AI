@@ -62,9 +62,24 @@ def skip_without_pg(pg_available: bool) -> None:
 # Schema bootstrap (session-scoped, autouse, sync).
 #
 # Creates all tables via Base.metadata.create_all (no Alembic) when PG is
-# available, and drops them at session end. Uses asyncio.run + engine.dispose
-# so connections are never shared across event loops (the setup loop is
-# separate from each test's function-scoped loop).
+# available, and drops them at session end.
+#
+# CRITICAL — event-loop isolation (Sprint 1.4 fix):
+# The previous implementation reused the module-level singleton
+# ``app.db.postgres.engine`` to create tables inside ``asyncio.run()``. That
+# engine's connection pool (asyncpg Protocol objects + Future objects) became
+# bound to the transient setup loop; even after ``engine.dispose()`` the
+# ``AsyncAdaptedQueuePool`` retained adapters that, when reused by tests
+# running in their own function-scoped loop, raised
+# ``RuntimeError: Task got Future attached to a different loop`` (and a
+# cascading ``ValueError: password cannot be longer than 72 bytes`` from
+# passlib's threadpool).
+#
+# Fix: setup_db builds a **dedicated, throwaway engine** that is fully
+# disposed within the setup loop. The global ``app.db.postgres.engine`` is
+# never touched here, so its pool is empty when tests begin — each test
+# creates fresh connections bound to its own loop. A new throwaway engine is
+# built again at teardown for the drop.
 # ---------------------------------------------------------------------------
 @pytest.fixture(scope="session", autouse=True)
 def setup_db(pg_available: bool):
@@ -73,29 +88,38 @@ def setup_db(pg_available: bool):
         return
 
     # Import here so the env-var defaults above are applied first.
-    from app.db.postgres import engine
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.config import settings
     from app.models.db import Base
 
-    async def _create():
-        async with engine.begin() as conn:
-            # pgvector extension must exist before any table with VECTOR
-            # columns can be created. The migrations job creates it via
-            # alembic, but this fixture uses Base.metadata.create_all directly.
-            from sqlalchemy import text
-
-            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-            await conn.run_sync(Base.metadata.create_all)
-        # Dispose so no pooled connection is tied to this transient event loop;
-        # tests will create fresh connections in their own loop.
-        await engine.dispose()
+    async def _create() -> None:
+        # Dedicated throwaway engine: completely isolated from the global
+        # ``app.db.postgres.engine`` singleton used by tests. Its connections
+        # are bound to this setup loop and destroyed with it.
+        tmp_engine = create_async_engine(settings.database_url, future=True)
+        try:
+            async with tmp_engine.begin() as conn:
+                # pgvector extension must exist before any table with VECTOR
+                # columns can be created. The migrations job creates it via
+                # alembic, but this fixture uses Base.metadata.create_all.
+                await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                await conn.run_sync(Base.metadata.create_all)
+        finally:
+            await tmp_engine.dispose()
 
     asyncio.run(_create())
     yield
 
-    async def _drop():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
-        await engine.dispose()
+    async def _drop() -> None:
+        # A fresh throwaway engine for teardown (the create-time one is gone).
+        tmp_engine = create_async_engine(settings.database_url, future=True)
+        try:
+            async with tmp_engine.begin() as conn:
+                await conn.run_sync(Base.metadata.drop_all)
+        finally:
+            await tmp_engine.dispose()
 
     asyncio.run(_drop())
 
