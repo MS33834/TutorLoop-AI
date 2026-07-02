@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
+from app.config import settings
 from app.db.postgres import AsyncSessionLocal
 from app.gateway import pool, stream_chat
 from app.limiter import limiter
@@ -18,6 +19,14 @@ from app.models.db import Room, RoomEntrySession, User
 from app.schemas import ChatRequest, HealthResponse, KeyHealthSummary
 from app.services import bkt_engine
 from app.services.auth_service import get_optional_current_user
+from app.services.cache_service import (
+    compute_cache_key,
+    get_cached_answer,
+    hash_screenshot,
+    incr_cache_hits,
+    incr_cache_misses,
+    set_cached_answer,
+)
 from app.services.rag_service import retrieve_context
 from app.services.socratic_agent import assess_answer, build_socratic_messages, looks_like_answer
 
@@ -236,7 +245,12 @@ async def _record_mastery_after_chat(
         logger.warning("Mastery update after chat failed: %s", exc)
 
 
-async def _sse_event_stream(request: ChatRequest, user_id: str | None, course_id: str | None):
+async def _sse_event_stream(
+    request: ChatRequest,
+    user_id: str | None,
+    course_id: str | None,
+    redis=None,
+):
     messages = [m.model_dump() for m in request.messages]
     context_text: str | None = None
     node_name: str | None = None
@@ -315,9 +329,55 @@ async def _sse_event_stream(request: ChatRequest, user_id: str | None, course_id
             ]
 
     try:
+        # --- Hot answer cache (text-only requests, no screenshot) ---
+        # Only attempt cache lookup for text requests without a screenshot;
+        # screenshot answers depend on the image pixels and are too specific
+        # to share across users. The cache is a no-op when Redis is
+        # unavailable (redis=None) or when ENABLE_ANSWER_CACHE=false.
+        cache_key: str | None = None
+        if settings.enable_answer_cache and not has_screenshot and student_answer:
+            screenshot_hash = hash_screenshot(request.screenshot)
+            cache_key = compute_cache_key(course_id, student_answer, screenshot_hash)
+            cached = await get_cached_answer(redis, cache_key)
+            if cached:
+                await incr_cache_hits(redis)
+                # Simulate streaming by splitting the cached answer into
+                # chunks so the frontend's typewriter UX is preserved.
+                for i in range(0, len(cached), 10):
+                    chunk = {"type": "token", "content": cached[i:i + 10]}
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+                # Mastery is a side effect of the turn, not the answer text,
+                # so it is still recorded on cache hits.
+                await _record_mastery_after_chat(
+                    user_id=user_id,
+                    course_id=course_id,
+                    video_id=request.video_id,
+                    node_id=node_id,
+                    node_name=node_name,
+                    context_text=context_text,
+                    student_answer=student_answer,
+                    request=request,
+                    forced_answer=bool(request.need_answer),
+                )
+                return
+            await incr_cache_misses(redis)
+
+        full_answer = ""
+        had_error = False
         async for chunk in stream_chat(socratic_messages, model_type=model_type):
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            if isinstance(chunk, dict):
+                if chunk.get("type") == "token":
+                    full_answer += chunk.get("content", "")
+                elif chunk.get("type") == "error":
+                    had_error = True
         yield "data: [DONE]\n\n"
+
+        # Cache the completed answer for future identical text questions.
+        # Skip on errors or empty answers so a failure is never cached.
+        if cache_key and full_answer and not had_error:
+            await set_cached_answer(redis, cache_key, full_answer)
 
         # After the stream finishes, assess the student's answer and update
         # mastery. This runs in both Socratic and need_answer modes so that
@@ -387,8 +447,9 @@ async def chat(
         if room is not None:
             course_id = room.course_id
 
+    redis = getattr(request.app.state, "redis", None)
     return StreamingResponse(
-        _sse_event_stream(body, user_id, course_id),
+        _sse_event_stream(body, user_id, course_id, redis),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

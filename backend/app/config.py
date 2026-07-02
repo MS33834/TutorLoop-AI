@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     # dev over HTTP keeps working; override with COOKIE_SECURE=true in prod.
     cookie_secure: bool = Field(default=False, alias="COOKIE_SECURE")
 
+    # When True, the chat endpoint caches hot answers in Redis to reduce
+    # repeated LLM calls for identical questions. Defaults to True; the cache
+    # is a no-op when Redis is unavailable.
+    enable_answer_cache: bool = Field(default=True, alias="ENABLE_ANSWER_CACHE")
+
     @field_validator("secret_key")
     @classmethod
     def _validate_secret_key(cls, value: str) -> str:
