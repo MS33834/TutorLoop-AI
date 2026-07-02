@@ -126,7 +126,67 @@ git push gitcode main
 # 确保所有 job 都是绿色
 ```
 
-### 3.4 更新路线图进度
+### 3.4 推送后远程仓库健康检查（强制）
+
+> ⚠️ **每次完成开发并推送后，必须逐项执行以下检查。这是团队强制规范，不得跳过。**
+> 目的：及时发现社区反馈（PR/Issue）、异常分支、CI 回归，避免问题累积。
+
+```bash
+# TOKEN 替换为有效的 GitHub Personal Access Token（不要写入仓库）
+TOKEN=<your-github-token>
+REPO=MS33834/tutorloop-ai
+```
+
+- [ ] **3.4.1 CI 是否全绿**（最关键）
+  ```bash
+  curl -s -H "Authorization: token $TOKEN" \
+    "https://api.github.com/repos/$REPO/actions/runs?per_page=3" | \
+    python3 -c "import sys,json; [print(r['head_sha'][:7],'|',r['name'],'|',r['conclusion']) for r in json.load(sys.stdin)['workflow_runs']]"
+  ```
+  - 预期：最新一次 run 的三个 job（backend / migrations / frontend）conclusion 均为 `success`
+  - **若非全绿，必须立即定位失败 job 并修复，不得开始下一个任务**
+
+- [ ] **3.4.2 是否有未处理的 Pull Request**
+  ```bash
+  curl -s -H "Authorization: token $TOKEN" \
+    "https://api.github.com/repos/$REPO/pulls?state=open" | \
+    python3 -c "import sys,json; d=json.load(sys.stdin); print(f'开放 PR 数: {len(d)}'); [print(' #',p['number'],p['title']) for p in d]"
+  ```
+  - 预期：`开放 PR 数: 0`（或已知 PR 已 review）
+  - **若有新 PR，必须 review 并决定合并/关闭/要求修改**
+
+- [ ] **3.4.3 是否有未处理的 Issue**
+  ```bash
+  curl -s -H "Authorization: token $TOKEN" \
+    "https://api.github.com/repos/$REPO/issues?state=open" | \
+    python3 -c "import sys,json; d=json.load(sys.stdin); print(f'开放 Issue 数: {len(d)}'); [print(' #',i['number'],i['title']) for i in d]"
+  ```
+  - 预期：`开放 Issue 数: 0`（或已知 Issue 已排期）
+  - **若有新 Issue，必须评估优先级并回应**
+
+- [ ] **3.4.4 是否有待合并/异常分支**
+  ```bash
+  curl -s -H "Authorization: token $TOKEN" \
+    "https://api.github.com/repos/$REPO/branches" | \
+    python3 -c "import sys,json; d=json.load(sys.stdin); print('分支:'); [print(' ',b['name'],b['commit']['sha'][:7]) for b in d]"
+  ```
+  - 预期：仅 `main` 分支
+  - **若有其他分支，确认是否需要合并到 main 或删除**
+
+- [ ] **3.4.5 双仓库是否同步**（GitHub = GitCode）
+  ```bash
+  git fetch origin && git fetch gitcode
+  git log --oneline origin/main -1
+  git log --oneline gitcode/main -1
+  ```
+  - 预期：两个 remote 的 HEAD commit SHA 一致
+  - **若不一致，重新推送到落后的仓库**
+
+- [ ] **3.4.6 记录检查结果**
+  - 在本次任务的交付说明/commit message/计划表中简要记录检查结果
+  - 示例：「远程检查：CI 全绿 ✓ / PR 0 / Issue 0 / 仅 main 分支 / 双仓库同步」
+
+### 3.5 更新路线图进度
 - 打开 `docs/03_Roadmap_and_Plan.md` 和 `docs/06_Phase4_Detailed_Plan.md`
 - 将完成的任务项 `[ ]` 改为 `[x]`
 - 提交进度更新：
