@@ -40,7 +40,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(16), default="student")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(default=now_utc)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
 class Course(Base):
@@ -54,7 +54,7 @@ class Course(Base):
     video_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_by: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     config_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=now_utc)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
     videos: Mapped[list["Video"]] = relationship(
         back_populates="course", cascade="all, delete-orphan"
@@ -84,7 +84,7 @@ class Video(Base):
     duration_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     transcript_json: Mapped[Optional[list[dict]]] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="processing")
-    created_at: Mapped[datetime] = mapped_column(default=now_utc)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
     course: Mapped["Course"] = relationship(back_populates="videos")
     frames: Mapped[list["VideoFrame"]] = relationship(
@@ -131,7 +131,7 @@ class KnowledgeNode(Base):
     position_x: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     position_y: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     embedding = _vector_column()
-    created_at: Mapped[datetime] = mapped_column(default=now_utc)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
     course: Mapped["Course"] = relationship(back_populates="knowledge_nodes")
     mastery_records: Mapped[list["Mastery"]] = relationship(
@@ -165,7 +165,7 @@ class KnowledgeEdge(Base):
         ForeignKey("knowledge_nodes.id", ondelete="CASCADE"), nullable=False
     )
     relation: Mapped[str] = mapped_column(String(64), default="prerequisite")
-    created_at: Mapped[datetime] = mapped_column(default=now_utc)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
 class Mastery(Base):
@@ -181,7 +181,7 @@ class Mastery(Base):
     p_s: Mapped[float] = mapped_column(Float, default=0.1)
     p_l0: Mapped[float] = mapped_column(Float, default=0.1)
     interactions_count: Mapped[int] = mapped_column(Integer, default=0)
-    updated_at: Mapped[datetime] = mapped_column(default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
     node: Mapped["KnowledgeNode"] = relationship(back_populates="mastery_records")
 
@@ -211,8 +211,8 @@ class Room(Base):
     welcome_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     max_participants: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     config_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=now_utc)
-    updated_at: Mapped[datetime] = mapped_column(default=now_utc, onupdate=now_utc)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
     course: Mapped["Course"] = relationship(back_populates="rooms")
 
@@ -256,7 +256,7 @@ class Interaction(Base):
     is_correct: Mapped[Optional[bool]] = mapped_column(nullable=True)
     help_count: Mapped[int] = mapped_column(Integer, default=0)
     watch_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=now_utc)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
 class RoomEntrySession(Base):
@@ -275,7 +275,7 @@ class RoomEntrySession(Base):
         ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
     )
     session_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(default=now_utc)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
 class CourseMaterial(Base):
@@ -297,7 +297,7 @@ class CourseMaterial(Base):
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
     extracted_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="processing")
-    created_at: Mapped[datetime] = mapped_column(default=now_utc)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
     course: Mapped["Course"] = relationship(back_populates="materials")
 
